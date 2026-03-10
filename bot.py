@@ -7,9 +7,9 @@ from groq import Groq
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = "8714473531:AAHKRRN8TOSL2PSa2KphQiLXakW5VH2VaIg"
-GROQ_API_KEY = "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"
-ADMIN_ID = 8103332892
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -202,11 +202,7 @@ def text_handler(message):
             else:
                 bot.send_message(cid, full)
 
-            bot.send_message(
-                cid,
-                "💡 Хочешь оптимизировать под другую вакансию?",
-                reply_markup=main_kb()
-            )
+            bot.send_message(cid, "💡 Хочешь оптимизировать под другую вакансию?", reply_markup=main_kb())
 
         except Exception as e:
             logging.error(f"Error: {e}")
@@ -232,9 +228,7 @@ if __name__ == "__main__":
     if WEBHOOK_URL:
         bot.remove_webhook()
         bot.set_webhook(url=WEBHOOK_URL + "/" + BOT_TOKEN)
-        logging.info(f"Webhook set to {WEBHOOK_URL}/{BOT_TOKEN}")
         app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
     else:
-        logging.info("No RENDER_EXTERNAL_URL, starting polling...")
         bot.remove_webhook()
         bot.polling(none_stop=True)
