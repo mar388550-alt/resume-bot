@@ -1,7 +1,6 @@
 import os
 import re
 import logging
-from datetime import datetime, timedelta
 from flask import Flask, request
 import telebot
 from groq import Groq
@@ -19,13 +18,11 @@ app = Flask(__name__)
 
 user_states = {}
 user_data = {}
-subscriptions = {}  # {user_id: datetime}
 
 admin_settings = {
     "price": 0,
     "ad_text": "",
-    "ad_active": False,
-    "sub_days": 0  # 0 = бесплатно/без подписки
+    "ad_active": False
 }
 
 support_tickets = {}
@@ -37,31 +34,7 @@ SUPPORT_EMAIL = "marfor13365@gmail.com"
 SYSTEM_PROMPT = """Ты эксперт по оптимизации резюме. Адаптируй резюме под вакансию: добавь ключевые слова, оптимизируй под ATS, усиль соответствие. Сохрани реальные данные. В конце: процент соответствия, что усилено, чего не хватает. Отвечай на языке резюме."""
 
 
-def get_sub_status(cid):
-    """Проверяет подписку. Возвращает (активна, дней_осталось)"""
-    if admin_settings["sub_days"] == 0:
-        return True, None  # бесплатный режим
-    if cid not in subscriptions:
-        return False, 0
-    expiry = subscriptions[cid]
-    now = datetime.now()
-    if now > expiry:
-        return False, 0
-    days_left = (expiry - now).days
-    return True, days_left
-
-
-def format_sub_days(days):
-    if days == 0:
-        return "Бесплатно"
-    if days == 1:
-        return "1 день"
-    if 2 <= days <= 4:
-        return f"{days} дня"
-    return f"{days} дней"
-
-
-# ─── KEYBOARDS ────────────────────────────────────────────
+# ── КЛАВИАТУРЫ ──────────────────────────────────────────
 
 def agree_kb():
     kb = telebot.types.InlineKeyboardMarkup()
@@ -72,15 +45,12 @@ def agree_kb():
     )
     return kb
 
-
 def main_kb():
     kb = telebot.types.InlineKeyboardMarkup()
     kb.add(telebot.types.InlineKeyboardButton("🚀 Оптимизировать резюме", callback_data="start_flow"))
-    kb.add(telebot.types.InlineKeyboardButton("🗓 Моя подписка", callback_data="my_sub"))
     kb.add(telebot.types.InlineKeyboardButton("ℹ️ Информация", callback_data="info"))
     kb.add(telebot.types.InlineKeyboardButton("🆘 Поддержка", callback_data="support"))
     return kb
-
 
 def info_kb():
     kb = telebot.types.InlineKeyboardMarkup()
@@ -91,19 +61,16 @@ def info_kb():
     kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_main"))
     return kb
 
-
 def support_kb():
     kb = telebot.types.InlineKeyboardMarkup()
     kb.add(telebot.types.InlineKeyboardButton("✉️ Отправить вопрос", callback_data="write_support"))
     kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_main"))
     return kb
 
-
 def back_main_kb():
     kb = telebot.types.InlineKeyboardMarkup()
-    kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_main"))
+    kb.add(telebot.types.InlineKeyboardButton("◀️ Назад в меню", callback_data="back_main"))
     return kb
-
 
 def back_resume_kb():
     kb = telebot.types.InlineKeyboardMarkup()
@@ -111,26 +78,19 @@ def back_resume_kb():
     kb.add(telebot.types.InlineKeyboardButton("🏠 Главное меню", callback_data="back_main"))
     return kb
 
-
 def result_kb():
     kb = telebot.types.InlineKeyboardMarkup()
     kb.add(telebot.types.InlineKeyboardButton("🔄 Оптимизировать ещё раз", callback_data="start_flow"))
     kb.add(telebot.types.InlineKeyboardButton("🏠 Главное меню", callback_data="back_main"))
     return kb
 
-
 def admin_kb():
-    sub = format_sub_days(admin_settings["sub_days"])
     kb = telebot.types.InlineKeyboardMarkup()
     kb.add(telebot.types.InlineKeyboardButton("💰 Установить цену", callback_data="admin_price"))
-    kb.add(telebot.types.InlineKeyboardButton(f"🗓 Срок подписки: {sub}", callback_data="admin_sub_days"))
-    kb.add(telebot.types.InlineKeyboardButton("👤 Выдать подписку юзеру", callback_data="admin_give_sub"))
-    kb.add(telebot.types.InlineKeyboardButton("📋 Список подписок", callback_data="admin_sub_list"))
     kb.add(telebot.types.InlineKeyboardButton("📢 Управление рекламой", callback_data="admin_ad"))
     kb.add(telebot.types.InlineKeyboardButton("🎫 Тикеты поддержки", callback_data="admin_tickets"))
     kb.add(telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"))
     return kb
-
 
 def admin_ad_kb():
     status = "✅ Вкл" if admin_settings["ad_active"] else "❌ Выкл"
@@ -141,7 +101,7 @@ def admin_ad_kb():
     return kb
 
 
-# ─── HANDLERS ─────────────────────────────────────────────
+# ── КОМАНДЫ ─────────────────────────────────────────────
 
 @bot.message_handler(commands=["start"])
 def start(message):
@@ -151,53 +111,52 @@ def start(message):
     bot.send_message(
         cid,
         "👋 Привет!\n\n"
-        "Я помогу адаптировать твоё резюме под конкретную вакансию и оптимизировать под ATS-проверку.\n\n"
+        "Я адаптирую твоё резюме под конкретную вакансию и оптимизирую под ATS-проверку работодателя.\n\n"
         "Для продолжения необходимо принять условия использования:",
         reply_markup=agree_kb()
     )
 
-
 @bot.message_handler(commands=["admin"])
-def admin_panel(message):
+def admin_cmd(message):
     if message.chat.id != ADMIN_ID:
         bot.send_message(message.chat.id, "⛔ Нет доступа.")
         return
-    sub = format_sub_days(admin_settings["sub_days"])
     price_text = f"{admin_settings['price']}₽" if admin_settings["price"] > 0 else "Бесплатно"
+    ad_status = "Включена ✅" if admin_settings["ad_active"] else "Выключена ❌"
+    ad_text = admin_settings["ad_text"] or "не задан"
     bot.send_message(
         message.chat.id,
         f"⚙️ Админ панель\n\n"
         f"💰 Цена: {price_text}\n"
-        f"🗓 Срок подписки: {sub}\n"
-        f"📢 Реклама: {'Включена' if admin_settings['ad_active'] else 'Выключена'}\n"
+        f"📢 Реклама: {ad_status}\n"
+        f"📝 Текст: {ad_text}\n"
         f"🎫 Тикетов: {len(support_tickets)}\n"
-        f"👥 Пользователей: {len(user_data)}\n"
-        f"✅ Активных подписок: {sum(1 for uid in subscriptions if datetime.now() < subscriptions[uid])}",
+        f"👥 Пользователей: {len(user_data)}",
         reply_markup=admin_kb()
     )
 
+
+# ── CALLBACK ─────────────────────────────────────────────
 
 @bot.callback_query_handler(func=lambda call: True)
 def cb(call):
     cid = call.message.chat.id
     data = call.data
-    logger.info(f"Callback {data} from {cid}")
 
+    # AGREE
     if data == "agree":
         user_data.setdefault(cid, {})["agreed"] = True
         try:
             bot.edit_message_text(
                 "✅ Условия приняты!\n\n"
-                "Я адаптирую твоё резюме под конкретную вакансию:\n"
-                "• Добавлю ключевые слова\n"
-                "• Оптимизирую под ATS-проверку\n"
-                "• Усилю соответствие требованиям",
+                "Выбери действие:",
                 cid, call.message.message_id,
                 reply_markup=main_kb()
             )
         except:
             bot.send_message(cid, "🏠 Главное меню:", reply_markup=main_kb())
 
+    # ГЛАВНОЕ МЕНЮ
     elif data == "back_main":
         user_states[cid] = None
         try:
@@ -205,32 +164,13 @@ def cb(call):
         except:
             bot.send_message(cid, "🏠 Главное меню:", reply_markup=main_kb())
 
-    elif data == "my_sub":
-        active, days_left = get_sub_status(cid)
-        if admin_settings["sub_days"] == 0:
-            text = "🗓 Подписка\n\nСервис работает в бесплатном режиме."
-        elif active:
-            if days_left == 0:
-                text = "🗓 Подписка\n\n✅ Активна\nИстекает сегодня!"
-            else:
-                text = f"🗓 Подписка\n\n✅ Активна\nОсталось дней: {days_left}"
-        else:
-            text = "🗓 Подписка\n\n❌ Подписка не активна\n\nДля получения доступа обратитесь в поддержку."
-        try:
-            bot.edit_message_text(text, cid, call.message.message_id, reply_markup=back_main_kb())
-        except:
-            bot.send_message(cid, text, reply_markup=back_main_kb())
-
+    # ИНФОРМАЦИЯ
     elif data == "info":
         try:
             bot.edit_message_text(
-                "ℹ️ Информация\n\n"
-                "🤖 Бот оптимизации резюме\n\n"
-                "Адаптирует резюме под конкретную вакансию с учётом ATS-систем.\n\n"
-                "📋 Условия использования:\n"
-                "• Срок действия подписки устанавливается администратором\n"
-                "• По истечении подписки доступ ограничивается\n"
-                "• Для продления обратитесь в поддержку\n\n"
+                f"ℹ️ Информация\n\n"
+                f"🤖 Бот оптимизации резюме\n\n"
+                f"Адаптирует резюме под вакансию с учётом ATS-систем.\n\n"
                 f"📧 Поддержка: {SUPPORT_EMAIL}",
                 cid, call.message.message_id,
                 reply_markup=info_kb()
@@ -238,129 +178,98 @@ def cb(call):
         except:
             bot.send_message(cid, f"ℹ️ Поддержка: {SUPPORT_EMAIL}", reply_markup=info_kb())
 
+    # ПОДДЕРЖКА
     elif data == "support":
         try:
             bot.edit_message_text(
                 f"🆘 Поддержка\n\n"
                 f"📧 Email: {SUPPORT_EMAIL}\n\n"
-                f"Или отправьте вопрос прямо здесь — ответим в ближайшее время:",
+                f"Или отправьте вопрос прямо здесь:",
                 cid, call.message.message_id,
                 reply_markup=support_kb()
             )
         except:
-            bot.send_message(cid, f"🆘 Поддержка\n\n📧 {SUPPORT_EMAIL}", reply_markup=support_kb())
+            bot.send_message(cid, f"🆘 {SUPPORT_EMAIL}", reply_markup=support_kb())
 
     elif data == "write_support":
         user_states[cid] = "writing_support"
         bot.send_message(cid, "✉️ Напишите ваш вопрос:", reply_markup=back_main_kb())
 
+    # СТАРТ ФЛОУ
     elif data == "start_flow":
         if not user_data.get(cid, {}).get("agreed"):
             bot.send_message(cid, "⚠️ Сначала примите условия.", reply_markup=agree_kb())
-            bot.answer_callback_query(call.id)
+            try: bot.answer_callback_query(call.id)
+            except: pass
             return
-        # Проверка подписки
-        active, days_left = get_sub_status(cid)
-        if not active:
-            bot.send_message(cid,
-                "❌ Ваша подписка не активна.\n\n"
-                f"Для получения доступа обратитесь в поддержку:\n📧 {SUPPORT_EMAIL}",
-                reply_markup=support_kb()
-            )
-            bot.answer_callback_query(call.id)
-            return
-        # Предупреждение если осталось мало
-        if days_left is not None and days_left <= 3:
-            bot.send_message(cid, f"⚠️ Внимание! Ваша подписка истекает через {days_left} дн.")
-
         user_states[cid] = "waiting_resume"
         user_data.setdefault(cid, {})["resume"] = ""
         bot.send_message(
             cid,
-            "📄 Шаг 1 из 2 — Резюме\n\nОтправь своё резюме:\n• Вставь текст\n• Или прикрепи .txt файл",
+            "📄 Шаг 1 из 2 — Резюме\n\n"
+            "Отправь своё резюме:\n• Вставь текст\n• Или прикрепи .txt файл",
             reply_markup=back_main_kb()
         )
 
-    # ─── ADMIN ───
+    # АДМИН — НАЗАД
     elif data == "admin_back":
         if cid == ADMIN_ID:
-            sub = format_sub_days(admin_settings["sub_days"])
             price_text = f"{admin_settings['price']}₽" if admin_settings["price"] > 0 else "Бесплатно"
+            ad_status = "Включена ✅" if admin_settings["ad_active"] else "Выключена ❌"
             try:
                 bot.edit_message_text(
-                    f"⚙️ Админ панель\n\n💰 Цена: {price_text}\n🗓 Подписка: {sub}",
-                    cid, call.message.message_id, reply_markup=admin_kb()
+                    f"⚙️ Админ панель\n\n"
+                    f"💰 Цена: {price_text}\n"
+                    f"📢 Реклама: {ad_status}\n"
+                    f"📝 Текст: {admin_settings['ad_text'] or 'не задан'}",
+                    cid, call.message.message_id,
+                    reply_markup=admin_kb()
                 )
             except:
                 pass
 
+    # АДМИН — ЦЕНА
     elif data == "admin_price":
         if cid == ADMIN_ID:
             user_states[cid] = "admin_set_price"
             bot.send_message(cid, "💰 Введите цену в рублях (0 = бесплатно):", reply_markup=back_main_kb())
 
-    elif data == "admin_sub_days":
-        if cid == ADMIN_ID:
-            user_states[cid] = "admin_set_sub_days"
-            bot.send_message(cid,
-                "🗓 Введите срок подписки в днях:\n\n"
-                "0 = бесплатный режим (без подписки)\n"
-                "30 = 30 дней и т.д.",
-                reply_markup=back_main_kb()
-            )
-
-    elif data == "admin_give_sub":
-        if cid == ADMIN_ID:
-            user_states[cid] = "admin_give_sub"
-            bot.send_message(cid,
-                "👤 Введите ID пользователя для выдачи подписки:\n\n"
-                "(можно узнать из тикетов или у пользователя через /start)",
-                reply_markup=back_main_kb()
-            )
-
-    elif data == "admin_sub_list":
-        if cid == ADMIN_ID:
-            if not subscriptions:
-                bot.send_message(cid, "📋 Подписок нет.", reply_markup=admin_kb())
-            else:
-                text = "📋 Активные подписки:\n\n"
-                now = datetime.now()
-                for uid, expiry in subscriptions.items():
-                    days_left = (expiry - now).days
-                    status = f"✅ {days_left} дн." if now < expiry else "❌ истекла"
-                    text += f"👤 {uid}: {status} (до {expiry.strftime('%d.%m.%Y')})\n"
-                bot.send_message(cid, text, reply_markup=admin_kb())
-
+    # АДМИН — РЕКЛАМА
     elif data == "admin_ad":
         if cid == ADMIN_ID:
-            text = admin_settings["ad_text"] or "Текст не задан"
+            ad_text = admin_settings["ad_text"] or "Текст не задан"
             try:
                 bot.edit_message_text(
-                    f"📢 Управление рекламой\n\nТекущий текст:\n{text}",
-                    cid, call.message.message_id, reply_markup=admin_ad_kb()
+                    f"📢 Управление рекламой\n\nТекущий текст:\n{ad_text}",
+                    cid, call.message.message_id,
+                    reply_markup=admin_ad_kb()
                 )
             except:
-                pass
+                bot.send_message(cid, f"📢 Реклама\n\n{ad_text}", reply_markup=admin_ad_kb())
 
     elif data == "admin_ad_toggle":
         if cid == ADMIN_ID:
             admin_settings["ad_active"] = not admin_settings["ad_active"]
             status = "включена ✅" if admin_settings["ad_active"] else "выключена ❌"
-            bot.answer_callback_query(call.id, f"Реклама {status}")
-            text = admin_settings["ad_text"] or "Текст не задан"
+            try: bot.answer_callback_query(call.id, f"Реклама {status}")
+            except: pass
+            ad_text = admin_settings["ad_text"] or "Текст не задан"
             try:
                 bot.edit_message_text(
-                    f"📢 Управление рекламой\n\nТекущий текст:\n{text}",
-                    cid, call.message.message_id, reply_markup=admin_ad_kb()
+                    f"📢 Управление рекламой\n\nТекущий текст:\n{ad_text}",
+                    cid, call.message.message_id,
+                    reply_markup=admin_ad_kb()
                 )
             except:
                 pass
+            return
 
     elif data == "admin_ad_text":
         if cid == ADMIN_ID:
             user_states[cid] = "admin_set_ad"
-            bot.send_message(cid, "✏️ Введите текст рекламы:", reply_markup=back_main_kb())
+            bot.send_message(cid, "✏️ Введите текст рекламы (появится после каждого результата):", reply_markup=back_main_kb())
 
+    # АДМИН — ТИКЕТЫ
     elif data == "admin_tickets":
         if cid == ADMIN_ID:
             if not support_tickets:
@@ -377,18 +286,22 @@ def cb(call):
             user_states[cid] = f"replying_{target_id}"
             bot.send_message(cid, f"✉️ Введите ответ пользователю {target_id}:", reply_markup=back_main_kb())
 
+    # АДМИН — СТАТИСТИКА
     elif data == "admin_stats":
         if cid == ADMIN_ID:
-            active_subs = sum(1 for uid in subscriptions if datetime.now() < subscriptions[uid])
-            bot.answer_callback_query(call.id,
-                f"👥 {len(user_data)} польз. | ✅ {active_subs} подписок | 🎫 {len(support_tickets)} тикетов"
-            )
+            try:
+                bot.answer_callback_query(call.id, f"👥 {len(user_data)} польз. | 🎫 {len(support_tickets)} тикетов")
+            except:
+                pass
+            return
 
     try:
         bot.answer_callback_query(call.id)
     except:
         pass
 
+
+# ── ДОКУМЕНТЫ ────────────────────────────────────────────
 
 @bot.message_handler(content_types=["document"])
 def doc_handler(message):
@@ -397,21 +310,25 @@ def doc_handler(message):
         return
     doc = message.document
     if not doc.file_name.endswith(".txt"):
-        bot.send_message(cid, "⚠️ Только .txt формат.")
+        bot.send_message(cid, "⚠️ Только .txt формат. Скопируй текст и отправь как сообщение.")
         return
     file_info = bot.get_file(doc.file_id)
     downloaded = bot.download_file(file_info.file_path)
     user_data[cid]["resume"] = downloaded.decode("utf-8")
     user_states[cid] = "waiting_vacancy"
-    bot.send_message(cid, "✅ Резюме получено!\n\n📋 Шаг 2 из 2 — Вакансия\n\nТеперь вставь текст вакансии:", reply_markup=back_resume_kb())
+    bot.send_message(cid,
+        "✅ Резюме получено!\n\n📋 Шаг 2 из 2 — Вакансия\n\nТеперь вставь текст вакансии:",
+        reply_markup=back_resume_kb()
+    )
 
+
+# ── ТЕКСТ ────────────────────────────────────────────────
 
 @bot.message_handler(content_types=["text"])
 def text_handler(message):
     cid = message.chat.id
     text = message.text
     state = user_states.get(cid)
-    logger.info(f"Message from {cid}, state={state}")
 
     if text.startswith("/"):
         return
@@ -431,14 +348,13 @@ def text_handler(message):
                 pass
         return
 
-    # Ответ админа
+    # Ответ админа пользователю
     if state and state.startswith("replying_") and cid == ADMIN_ID:
         target_id = int(state.split("_")[1])
         try:
             bot.send_message(target_id, f"📨 Ответ от поддержки:\n\n{text}", reply_markup=main_kb())
             bot.send_message(cid, "✅ Ответ отправлен!", reply_markup=admin_kb())
-            if target_id in support_tickets:
-                del support_tickets[target_id]
+            support_tickets.pop(target_id, None)
         except Exception as e:
             bot.send_message(cid, f"❌ Ошибка: {e}")
         user_states[cid] = None
@@ -450,77 +366,29 @@ def text_handler(message):
             price = int(text)
             admin_settings["price"] = price
             price_text = f"{price}₽" if price > 0 else "Бесплатно"
-            bot.send_message(cid, f"✅ Цена: {price_text}", reply_markup=admin_kb())
+            bot.send_message(cid, f"✅ Цена установлена: {price_text}", reply_markup=admin_kb())
         except:
-            bot.send_message(cid, "❌ Введите число.")
+            bot.send_message(cid, "❌ Введите число.", reply_markup=admin_kb())
         user_states[cid] = None
         return
 
-    # Установка срока подписки
-    if state == "admin_set_sub_days" and cid == ADMIN_ID:
-        try:
-            days = int(text)
-            admin_settings["sub_days"] = days
-            sub_text = format_sub_days(days)
-            bot.send_message(cid, f"✅ Срок подписки установлен: {sub_text}", reply_markup=admin_kb())
-        except:
-            bot.send_message(cid, "❌ Введите число.")
-        user_states[cid] = None
-        return
-
-    # Выдача подписки юзеру
-    if state == "admin_give_sub" and cid == ADMIN_ID:
-        try:
-            parts = text.strip().split()
-            target_id = int(parts[0])
-            days = int(parts[1]) if len(parts) > 1 else admin_settings["sub_days"]
-            if days == 0:
-                bot.send_message(cid, "❌ Сначала установите срок подписки в настройках.")
-                user_states[cid] = None
-                return
-            expiry = datetime.now() + timedelta(days=days)
-            subscriptions[target_id] = expiry
-            sub_text = format_sub_days(days)
-            bot.send_message(cid,
-                f"✅ Подписка выдана!\n\n"
-                f"👤 Пользователь: {target_id}\n"
-                f"🗓 Срок: {sub_text}\n"
-                f"📅 До: {expiry.strftime('%d.%m.%Y')}",
-                reply_markup=admin_kb()
-            )
-            # Уведомление пользователю
-            try:
-                bot.send_message(target_id,
-                    f"🎉 Вам выдана подписка!\n\n"
-                    f"🗓 Срок: {sub_text}\n"
-                    f"📅 Действует до: {expiry.strftime('%d.%m.%Y')}\n\n"
-                    f"Нажмите /start чтобы начать.",
-                )
-            except:
-                pass
-        except:
-            bot.send_message(cid,
-                "❌ Неверный формат.\n\n"
-                "Введите: ID_пользователя [дней]\n"
-                "Пример: 123456789 30\n"
-                "Или просто ID (будет использован срок из настроек)"
-            )
-        user_states[cid] = None
-        return
-
-    # Установка рекламы
+    # Установка текста рекламы
     if state == "admin_set_ad" and cid == ADMIN_ID:
         admin_settings["ad_text"] = text
         admin_settings["ad_active"] = True
-        bot.send_message(cid, f"✅ Текст рекламы сохранён!\n\n📢 {text}", reply_markup=admin_kb())
+        bot.send_message(cid,
+            f"✅ Текст рекламы сохранён и включён!\n\nПредпросмотр:\n\n📢 {text}",
+            reply_markup=admin_kb()
+        )
         user_states[cid] = None
         return
 
     # Проверка согласия
     if not user_data.get(cid, {}).get("agreed"):
-        bot.send_message(cid, "⚠️ Сначала примите условия.", reply_markup=agree_kb())
+        bot.send_message(cid, "⚠️ Сначала примите условия использования.", reply_markup=agree_kb())
         return
 
+    # Резюме
     if state == "waiting_resume":
         if len(text) < 50:
             bot.send_message(cid, "⚠️ Текст слишком короткий. Отправь полное резюме.")
@@ -532,12 +400,13 @@ def text_handler(message):
             reply_markup=back_resume_kb()
         )
 
+    # Вакансия
     elif state == "waiting_vacancy":
         if re.match(r'https?://\S+', text.strip()):
-            bot.send_message(cid, "🔗 Ссылки не поддерживаются. Скопируй текст вакансии.", reply_markup=back_resume_kb())
+            bot.send_message(cid, "🔗 Ссылки не поддерживаются.\nСкопируй текст вакансии и отправь сюда.", reply_markup=back_resume_kb())
             return
         if len(text) < 30:
-            bot.send_message(cid, "⚠️ Текст вакансии слишком короткий.")
+            bot.send_message(cid, "⚠️ Текст вакансии слишком короткий.", reply_markup=back_resume_kb())
             return
 
         resume = user_data[cid].get("resume", "")
@@ -556,6 +425,7 @@ def text_handler(message):
             )
             result = response.choices[0].message.content
 
+            # Отправляем результат
             if len(result) > 3800:
                 bot.send_message(cid, "✅ Оптимизированное резюме:")
                 for i in range(0, len(result), 3800):
@@ -563,24 +433,22 @@ def text_handler(message):
             else:
                 bot.send_message(cid, f"✅ Оптимизированное резюме:\n\n{result}")
 
-            # Реклама
+            # Реклама после результата
             if admin_settings["ad_active"] and admin_settings["ad_text"]:
-                bot.send_message(cid, f"📢 Реклама:\n\n{admin_settings['ad_text']}")
+                bot.send_message(cid, f"📢 {admin_settings['ad_text']}")
 
-            # Уведомление о подписке если мало дней
-            active, days_left = get_sub_status(cid)
-            if days_left is not None and days_left <= 3:
-                bot.send_message(cid, f"⚠️ Ваша подписка истекает через {days_left} дн.\nОбратитесь в поддержку для продления.")
-
+            # Кнопки назад после результата
             bot.send_message(cid, "💡 Что хочешь сделать дальше?", reply_markup=result_kb())
 
         except Exception as e:
             logger.error(f"Groq error: {e}")
-            bot.send_message(cid, "❌ Ошибка. Попробуй ещё раз.", reply_markup=main_kb())
+            bot.send_message(cid, "❌ Ошибка при обработке. Попробуй ещё раз.", reply_markup=main_kb())
 
     else:
         bot.send_message(cid, "🏠 Главное меню:", reply_markup=main_kb())
 
+
+# ── WEBHOOK ──────────────────────────────────────────────
 
 @app.route("/" + BOT_TOKEN, methods=["POST"])
 def webhook():
@@ -591,7 +459,6 @@ def webhook():
     except Exception as e:
         logger.error(f"Webhook error: {e}")
     return "OK", 200
-
 
 @app.route("/")
 def index():
