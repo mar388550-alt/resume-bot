@@ -6,7 +6,8 @@ import logging
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-BOT_TOKEN = "8714473531:AAEBWs9cavggug5daa0-HGbJ8TI6tzo64zU"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8714473531:AAEBWs9cavggug5daa0-HGbJ8TI6tzo64zU")
+WEBHOOK_URL = "https://resume-bot-a82h.onrender.com"
 
 bot = telegram.Bot(token=BOT_TOKEN)
 app = Flask(__name__)
@@ -30,6 +31,12 @@ def webhook():
     update = telegram.Update.de_json(request.get_json(force=True), bot)
     dispatcher.process_update(update)
     return 'ok', 200
+
+@app.route('/set_webhook')
+def set_webhook():
+    url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
+    bot.set_webhook(url)
+    return f"Webhook установлен: {url}"
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
