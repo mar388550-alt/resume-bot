@@ -1,6 +1,10 @@
 import os
 import re
 import logging
+import uuid
+import hmac
+import hashlib
+import requests
 from datetime import datetime, timedelta
 from flask import Flask, request
 import telebot
@@ -8,14 +12,24 @@ from groq import Groq
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ========== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Платежи Platiga
+MERCHANT_ID = os.getenv("MERCHANT_ID")               # Ваш Merchant ID (выдаст менеджер)
+API_SECRET = os.getenv("API_SECRET")                 # Секретный ключ (выдаст менеджер)
+PLATIGA_API_URL = os.getenv("PLATIGA_API_URL", "https://app.platega.io/transaction/process")
+# URL вебхука – можно задать через переменную окружения, иначе используется значение по умолчанию
+PLATIGA_WEBHOOK_URL = os.getenv("PLATIGA_WEBHOOK_URL", "https://resume-bot-a82h.onrender.com/webhook/platiga")
+
+# ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
@@ -26,9 +40,9 @@ SUPPORT_EMAIL = "marfor13365@gmail.com"
 
 user_states = {}
 user_data = {}
-# Храним message_id последнего меню для удаления
 user_menu_msg = {}
 
+# ========== ПЕРЕВОДЫ ==========
 T = {
     "ru": {
         "choose_lang": "🌍 Выберите язык / Choose language:",
@@ -115,10 +129,7 @@ SYSTEM_PROMPT = {
     "en": "You are a resume expert. Briefly adapt the resume for the vacancy: add keywords, optimize for ATS. Keep real data. End with 2-3 lines: match % and key changes."
 }
 
-# ═══════════════════════════════════════
-# DATABASE
-# ═══════════════════════════════════════
-
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ДАННЫХ ==========
 def get_conn():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
@@ -138,6 +149,15 @@ def init_db():
     c.execute("""CREATE TABLE IF NOT EXISTS tickets (
         user_id BIGINT PRIMARY KEY,
         message TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""")
+    # Таблица для логов платежей (опционально)
+    c.execute("""CREATE TABLE IF NOT EXISTS payments (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        order_id TEXT,
+        amount INTEGER,
+        status TEXT,
         created_at TIMESTAMP DEFAULT NOW()
     )""")
     for key, val in [("price","0"),("subscription_days","30"),("ad_text",""),("ad_active","0")]:
@@ -229,10 +249,7 @@ def get_all_users():
 
 init_db()
 
-# ═══════════════════════════════════════
-# HELPERS
-# ═══════════════════════════════════════
-
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def t(uid, key, **kwargs):
     user = get_user(uid)
     lang = user["lang"] if user else "ru"
@@ -283,10 +300,70 @@ def send_menu(cid, text, kb):
     user_menu_msg[cid] = msg.message_id
     return msg
 
-# ═══════════════════════════════════════
-# KEYBOARDS
-# ═══════════════════════════════════════
+# ========== ФУНКЦИЯ ДЛЯ СОЗДАНИЯ ПЛАТЕЖА В PLATIGA ==========
+def create_platiga_payment(user_id, amount, description, payment_method=1, order_id=None):
+    """
+    Создаёт платёж в Platiga и возвращает ссылку для оплаты.
+    """
+    if not order_id:
+        order_id = f"{user_id}_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}"
+    
+    # Базовый URL для возврата пользователя в бота
+    bot_url = f"https://t.me/{(bot.get_me()).username}"
+    
+    payload = {
+        "paymentMethod": payment_method,
+        "paymentDetails": {
+            "amount": amount,
+            "currency": "RUB"
+        },
+        "description": description,
+        "return": f"{bot_url}?start=payment_success_{order_id}",
+        "failedUrl": f"{bot_url}?start=payment_fail_{order_id}",
+        "payload": {
+            "user_id": user_id,
+            "order_id": order_id,
+            "type": "subscription"
+        }
+    }
+    
+    # Добавляем вебхук (он уже задан выше)
+    if PLATIGA_WEBHOOK_URL:
+        payload["webhook_url"] = PLATIGA_WEBHOOK_URL
+    
+    headers = {
+        "X-MerchantId": MERCHANT_ID,
+        "X-Secret": API_SECRET,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        logger.info(f"Creating Platiga payment for user {user_id}, amount {amount}")
+        response = requests.post(PLATIGA_API_URL, json=payload, headers=headers, timeout=15)
+        
+        logger.info(f"Platiga response status: {response.status_code}")
+        logger.info(f"Platiga response body: {response.text}")
+        
+        response.raise_for_status()
+        data = response.json()
+        
+        # Поле со ссылкой может называться по-разному — уточните у Platiga
+        payment_url = (data.get("paymentUrl") or data.get("redirectUrl") or 
+                       data.get("confirmationUrl") or data.get("url"))
+        
+        if not payment_url:
+            logger.error(f"Platiga: no payment URL in response: {data}")
+            return None
+            
+        return payment_url
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Platiga payment creation failed: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response body: {e.response.text}")
+        return None
 
+# ========== КЛАВИАТУРЫ ==========
 def lang_kb():
     kb = telebot.types.InlineKeyboardMarkup()
     kb.row(
@@ -362,10 +439,7 @@ def admin_kb():
     kb.add(telebot.types.InlineKeyboardButton("🏠 Выйти из админки", callback_data="admin_exit"))
     return kb
 
-# ═══════════════════════════════════════
-# HANDLERS
-# ═══════════════════════════════════════
-
+# ========== ОБРАБОТЧИКИ КОМАНД ==========
 @bot.message_handler(commands=["start"])
 def start(message):
     cid = message.chat.id
@@ -400,6 +474,7 @@ def _show_admin(cid):
     )
     user_menu_msg[cid] = msg.message_id
 
+# ========== ОБРАБОТЧИК INLINE КНОПОК ==========
 @bot.callback_query_handler(func=lambda call: True)
 def cb(call):
     cid = call.message.chat.id
@@ -452,17 +527,57 @@ def cb(call):
         except:
             send_menu(cid, t(cid,"main_menu"), main_kb(cid))
 
+    # ── МОЯ ПОДПИСКА (с кнопкой оплаты) ──
     elif data == "my_sub":
         status = sub_status_text(cid)
+        kb = telebot.types.InlineKeyboardMarkup()
+        if not has_access(cid) and get_setting("price") != "0":
+            kb.add(telebot.types.InlineKeyboardButton("💳 Оплатить подписку", callback_data="pay_subscription"))
+        kb.add(telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main"))
         try:
             bot.edit_message_text(
                 status + get_ad_footer(),
                 cid, call.message.message_id,
-                reply_markup=telebot.types.InlineKeyboardMarkup().add(
-                    telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main")
-                )
+                reply_markup=kb
             )
-        except: pass
+        except:
+            pass
+
+    # ── ОПЛАТА ПОДПИСКИ ──
+    elif data == "pay_subscription":
+        user = get_user(cid)
+        if not user or not user["agreed"]:
+            bot.answer_callback_query(call.id, t(cid,"need_agree"))
+            return
+        if has_access(cid):
+            bot.answer_callback_query(call.id, "У вас уже есть активная подписка!")
+            return
+
+        price = int(get_setting("price"))
+        days = get_setting("subscription_days")
+        description = f"Подписка на {days} дней"
+
+        # Проверяем, заданы ли ключи Platiga
+        if not MERCHANT_ID or not API_SECRET:
+            bot.answer_callback_query(call.id, "Платёжная система временно недоступна. Попробуйте позже.")
+            logger.error("Platiga credentials not set")
+            return
+
+        payment_url = create_platiga_payment(cid, price, description, payment_method=1)  # payment_method уточните
+
+        if payment_url:
+            try:
+                bot.edit_message_text(
+                    f"💳 Для оплаты перейдите по ссылке:\n{payment_url}\n\nПосле оплаты подписка активируется автоматически.",
+                    cid, call.message.message_id,
+                    reply_markup=telebot.types.InlineKeyboardMarkup().add(
+                        telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main")
+                    )
+                )
+            except:
+                pass
+        else:
+            bot.answer_callback_query(call.id, "Ошибка создания платежа, попробуйте позже.")
 
     elif data == "info":
         try:
@@ -608,6 +723,7 @@ def cb(call):
     except: pass
 
 
+# ========== ОБРАБОТЧИК ДОКУМЕНТОВ ==========
 @bot.message_handler(content_types=["document"])
 def doc_handler(message):
     cid = message.chat.id
@@ -623,7 +739,7 @@ def doc_handler(message):
     user_states[cid] = "waiting_vacancy"
     send_menu(cid, t(cid,"step2"), back_resume_kb(cid))
 
-
+# ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
 @bot.message_handler(content_types=["text"])
 def text_handler(message):
     cid = message.chat.id
@@ -770,7 +886,7 @@ def text_handler(message):
     else:
         send_menu(cid, t(cid,"main_menu"), main_kb(cid))
 
-
+# ========== ВЕБХУК ДЛЯ TELEGRAM ==========
 @app.route("/" + BOT_TOKEN, methods=["POST"])
 def webhook():
     try:
@@ -781,6 +897,40 @@ def webhook():
         logger.error(f"Webhook error: {e}")
     return "OK", 200
 
+# ========== ВЕБХУК ДЛЯ PLATIGA ==========
+@app.route("/webhook/platiga", methods=["POST"])
+def platiga_webhook():
+    """
+    Принимает уведомления от Platiga о статусе платежа.
+    После получения успешного платежа активирует подписку пользователю.
+    """
+    data = request.get_json()
+    logger.info(f"📩 Platiga webhook received: {data}")
+
+    # Здесь нужно будет обработать данные, когда узнаем их структуру от Platiga
+    # Примерная логика (уточните поля у менеджера):
+    # event = data.get("event") or data.get("status")
+    # if event == "succeeded" or event == "paid":
+    #     user_id = data.get("payload", {}).get("user_id")
+    #     order_id = data.get("payload", {}).get("order_id")
+    #     if user_id:
+    #         days = int(get_setting("subscription_days"))
+    #         sub_until = datetime.now() + timedelta(days=days)
+    #         upsert_user(int(user_id), sub_until=sub_until)
+    #         bot.send_message(user_id, f"✅ Оплата прошла! Подписка до {sub_until.strftime('%d.%m.%Y')}")
+
+    return "OK", 200
+
 @app.route("/")
 def index():
     return "Bot is running!", 200
+
+# ========== ЗАПУСК ==========
+if __name__ == "__main__":
+    # Устанавливаем вебхук для Telegram (если нужно)
+    bot.remove_webhook()
+    # Используем переменную окружения RENDER_EXTERNAL_HOSTNAME или подставляем вручную
+    # Если переменная не задана, используем значение по умолчанию
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'resume-bot-a82h.onrender.com')}/{BOT_TOKEN}"
+    bot.set_webhook(url=webhook_url)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
