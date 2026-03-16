@@ -1,12 +1,13 @@
 services:
-  - type: web
-    name: resume-bot
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bot:app
-
   - type: worker
-    name: resume-poster
+    name: poster-worker
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: python poster.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false   # или значение
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CHANNEL_ID
+        value: "@rezumeizi"
