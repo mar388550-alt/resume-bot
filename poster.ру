@@ -1,13 +1,13 @@
 import os
 import time
-import json
 import logging
 import requests
-from datetime import datetime
 from groq import Groq
 import schedule
+import psycopg2
+from psycopg2 import sql
 
-# Настройка логирования (в консоль и файл)
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -21,14 +21,15 @@ logger = logging.getLogger(__name__)
 # Проверка переменных окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-CHANNEL = os.getenv("CHANNEL_ID", "@rezumeizi")  # можно задать через переменную или оставить значение по умолчанию
+CHANNEL = os.getenv("CHANNEL_ID", "@rezumeizi")
+DATABASE_URL = os.getenv("DATABASE_URL")  # Render добавит её автоматически при подключении БД
 
-if not BOT_TOKEN or not GROQ_API_KEY:
-    raise ValueError("Missing required environment variables: BOT_TOKEN, GROQ_API_KEY")
+if not BOT_TOKEN or not GROQ_API_KEY or not DATABASE_URL:
+    raise ValueError("Missing required environment variables: BOT_TOKEN, GROQ_API_KEY, DATABASE_URL")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# Список тем (можно вынести в отдельный файл, если нужно)
+# Список тем (можешь дополнить или изменить)
 TOPICS_RU = [
     "5 ошибок в резюме которые отсеивают ATS-системы",
     "Как правильно описать опыт работы чтобы пройти ATS",
@@ -47,28 +48,53 @@ TOPICS_RU = [
     "Пробелы в карьере: как объяснить в резюме",
 ]
 
-STATE_FILE = "poster_state.json"
+def init_db():
+    """Создаёт таблицу для хранения состояния, если её нет."""
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS poster_state (
+            key VARCHAR(50) PRIMARY KEY,
+            value INTEGER
+        )
+    """)
+    # Вставляем начальное значение, если записи нет
+    cur.execute("""
+        INSERT INTO poster_state (key, value) 
+        VALUES ('topic_index', 0) 
+        ON CONFLICT (key) DO NOTHING
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info("Database initialized")
 
 def load_state():
-    """Загружает индекс последней опубликованной темы из файла."""
-    try:
-        with open(STATE_FILE, "r") as f:
-            data = json.load(f)
-            return data.get("topic_index", 0)
-    except FileNotFoundError:
-        return 0
-    except json.JSONDecodeError:
-        logger.warning("State file corrupted, starting from 0")
+    """Загружает индекс последней темы из БД."""
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM poster_state WHERE key = 'topic_index'")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if row:
+        return row[0]
+    else:
+        init_db()
         return 0
 
 def save_state(index):
-    """Сохраняет текущий индекс в файл."""
-    with open(STATE_FILE, "w") as f:
-        json.dump({"topic_index": index}, f)
+    """Сохраняет индекс в БД."""
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("UPDATE poster_state SET value = %s WHERE key = 'topic_index'", (index,))
+    conn.commit()
+    cur.close()
+    conn.close()
     logger.debug(f"State saved: topic_index={index}")
 
 def generate_post(topic):
-    """Генерирует текст поста через Groq API."""
+    """Генерирует пост через Groq API."""
     prompt = f"""Напиши полезный пост для Telegram канала о резюме и карьере.
 Тема: {topic}
 
@@ -89,7 +115,7 @@ def generate_post(topic):
     return response.choices[0].message.content
 
 def send_to_telegram(text):
-    """Отправляет сообщение в Telegram канал."""
+    """Отправляет пост в Telegram."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": CHANNEL,
@@ -97,11 +123,11 @@ def send_to_telegram(text):
         "parse_mode": "HTML"
     }
     response = requests.post(url, json=data, timeout=10)
-    response.raise_for_status()  # выбросит исключение при HTTP ошибке
+    response.raise_for_status()
     return response.json()
 
 def post_with_retry(topic, retries=3):
-    """Пытается сгенерировать и отправить пост, при неудаче повторяет."""
+    """Пытается отправить пост с повторами при ошибках."""
     for attempt in range(1, retries + 1):
         try:
             logger.info(f"Generating post for topic: {topic}")
@@ -116,13 +142,13 @@ def post_with_retry(topic, retries=3):
         except Exception as e:
             logger.error(f"Attempt {attempt} failed: {e}")
         if attempt < retries:
-            wait = 10 * attempt  # увеличиваем задержку с каждой попыткой
+            wait = 10 * attempt
             logger.info(f"Retrying in {wait} seconds...")
             time.sleep(wait)
     return False
 
 def job():
-    """Функция, которая вызывается по расписанию."""
+    """Функция, которая выполняется по расписанию."""
     global topic_index
     topic = TOPICS_RU[topic_index % len(TOPICS_RU)]
     logger.info(f"Starting job for topic index {topic_index}: {topic}")
@@ -135,19 +161,19 @@ def job():
         logger.error("Failed to post after retries, will try again tomorrow with same topic.")
 
 def run_poster():
-    """Главный цикл, запускает планировщик."""
     global topic_index
+    init_db()
     topic_index = load_state()
     logger.info(f"Poster started. Next topic index: {topic_index}")
 
-    # Планируем ежедневный запуск в 07:00 UTC
+    # Планируем ежедневный запуск в 07:00 UTC (10:00 МСК)
     schedule.every().day.at("07:00").do(job)
     logger.info("Scheduled daily post at 07:00 UTC")
 
     # Бесконечный цикл проверки расписания
     while True:
         schedule.run_pending()
-        time.sleep(60)  # проверяем каждую минуту
+        time.sleep(60)
 
 if __name__ == "__main__":
     run_poster()
