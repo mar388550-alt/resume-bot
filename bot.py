@@ -2,6 +2,7 @@ import os
 import re
 import logging
 import uuid
+import json
 import hmac
 import hashlib
 import requests
@@ -23,11 +24,9 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Платежи Platiga
-MERCHANT_ID = os.getenv("MERCHANT_ID")               # Ваш Merchant ID (выдаст менеджер)
-API_SECRET = os.getenv("API_SECRET")                 # Секретный ключ (выдаст менеджер)
-PLATIGA_API_URL = os.getenv("PLATIGA_API_URL", "https://app.platega.io/transaction/process")
-# URL вебхука – можно задать через переменную окружения, иначе используется значение по умолчанию
-PLATIGA_WEBHOOK_URL = os.getenv("PLATIGA_WEBHOOK_URL", "https://resume-bot-a82h.onrender.com/webhook/platiga")
+MERCHANT_ID = os.getenv("MERCHANT_ID")               # Ваш Merchant ID (от менеджера)
+API_SECRET = os.getenv("API_SECRET")                 # Секретный ключ (от менеджера)
+PLATIGA_API_URL = "https://app.platega.io/transaction/process"  # Эндпоинт для создания платежа
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
@@ -301,9 +300,19 @@ def send_menu(cid, text, kb):
     return msg
 
 # ========== ФУНКЦИЯ ДЛЯ СОЗДАНИЯ ПЛАТЕЖА В PLATIGA ==========
-def create_platiga_payment(user_id, amount, description, payment_method=1, order_id=None):
+def create_platiga_payment(user_id, amount, description, payment_method=11, order_id=None):
     """
     Создаёт платёж в Platiga и возвращает ссылку для оплаты.
+    
+    Args:
+        user_id: ID пользователя в Telegram
+        amount: сумма платежа (число, например 100.50)
+        description: описание платежа
+        payment_method: числовой код способа оплаты (по умолчанию 11 — карты)
+        order_id: уникальный ID заказа (если не передан, генерируется)
+    
+    Returns:
+        Ссылка на платёжную страницу (поле "redirect") или None в случае ошибки
     """
     if not order_id:
         order_id = f"{user_id}_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}"
@@ -311,25 +320,24 @@ def create_platiga_payment(user_id, amount, description, payment_method=1, order
     # Базовый URL для возврата пользователя в бота
     bot_url = f"https://t.me/{(bot.get_me()).username}"
     
+    # Поле payload должно быть строкой (передаём JSON)
+    payload_data = json.dumps({
+        "user_id": user_id,
+        "order_id": order_id,
+        "type": "subscription"
+    }, ensure_ascii=False)
+    
     payload = {
         "paymentMethod": payment_method,
         "paymentDetails": {
-            "amount": amount,
+            "amount": amount,          # число, например 100.5
             "currency": "RUB"
         },
         "description": description,
         "return": f"{bot_url}?start=payment_success_{order_id}",
         "failedUrl": f"{bot_url}?start=payment_fail_{order_id}",
-        "payload": {
-            "user_id": user_id,
-            "order_id": order_id,
-            "type": "subscription"
-        }
+        "payload": payload_data        # строка с JSON
     }
-    
-    # Добавляем вебхук (он уже задан выше)
-    if PLATIGA_WEBHOOK_URL:
-        payload["webhook_url"] = PLATIGA_WEBHOOK_URL
     
     headers = {
         "X-MerchantId": MERCHANT_ID,
@@ -347,12 +355,11 @@ def create_platiga_payment(user_id, amount, description, payment_method=1, order
         response.raise_for_status()
         data = response.json()
         
-        # Поле со ссылкой может называться по-разному — уточните у Platiga
-        payment_url = (data.get("paymentUrl") or data.get("redirectUrl") or 
-                       data.get("confirmationUrl") or data.get("url"))
+        # Согласно документации, ссылка находится в поле "redirect"
+        payment_url = data.get("redirect")
         
         if not payment_url:
-            logger.error(f"Platiga: no payment URL in response: {data}")
+            logger.error(f"Platiga: no 'redirect' field in response: {data}")
             return None
             
         return payment_url
@@ -563,7 +570,8 @@ def cb(call):
             logger.error("Platiga credentials not set")
             return
 
-        payment_url = create_platiga_payment(cid, price, description, payment_method=1)  # payment_method уточните
+        # Используем payment_method = 11 (карты) — можно заменить на выбор способа оплаты
+        payment_url = create_platiga_payment(cid, float(price), description, payment_method=11)
 
         if payment_url:
             try:
@@ -902,22 +910,45 @@ def webhook():
 def platiga_webhook():
     """
     Принимает уведомления от Platiga о статусе платежа.
-    После получения успешного платежа активирует подписку пользователю.
+    Ожидаемые статусы:
+        CONFIRMED — успешная оплата
+        CANCELED — отмена
+        CHARGEBACK — возврат
     """
     data = request.get_json()
     logger.info(f"📩 Platiga webhook received: {data}")
 
-    # Здесь нужно будет обработать данные, когда узнаем их структуру от Platiga
-    # Примерная логика (уточните поля у менеджера):
-    # event = data.get("event") or data.get("status")
-    # if event == "succeeded" or event == "paid":
-    #     user_id = data.get("payload", {}).get("user_id")
-    #     order_id = data.get("payload", {}).get("order_id")
-    #     if user_id:
-    #         days = int(get_setting("subscription_days"))
-    #         sub_until = datetime.now() + timedelta(days=days)
-    #         upsert_user(int(user_id), sub_until=sub_until)
-    #         bot.send_message(user_id, f"✅ Оплата прошла! Подписка до {sub_until.strftime('%d.%m.%Y')}")
+    # Извлекаем статус и payload
+    status = data.get("status")
+    payload_str = data.get("payload", "{}")
+    
+    try:
+        payload = json.loads(payload_str) if isinstance(payload_str, str) else payload_str
+    except json.JSONDecodeError:
+        logger.error(f"Failed to parse payload: {payload_str}")
+        payload = {}
+
+    user_id = payload.get("user_id")
+    order_id = payload.get("order_id")
+
+    if status == "CONFIRMED" and user_id:
+        # Активируем подписку
+        days = int(get_setting("subscription_days"))
+        sub_until = datetime.now() + timedelta(days=days)
+        upsert_user(int(user_id), sub_until=sub_until)
+        
+        # Уведомляем пользователя
+        try:
+            bot.send_message(
+                user_id,
+                f"✅ Оплата прошла успешно! Подписка активна до {sub_until.strftime('%d.%m.%Y')}.",
+                reply_markup=main_kb(user_id)
+            )
+            logger.info(f"Subscription activated for user {user_id} until {sub_until}")
+        except Exception as e:
+            logger.error(f"Failed to notify user {user_id}: {e}")
+    else:
+        logger.info(f"Unhandled status '{status}' or missing user_id")
 
     return "OK", 200
 
@@ -927,10 +958,9 @@ def index():
 
 # ========== ЗАПУСК ==========
 if __name__ == "__main__":
-    # Устанавливаем вебхук для Telegram (если нужно)
+    # Устанавливаем вебхук для Telegram
     bot.remove_webhook()
     # Используем переменную окружения RENDER_EXTERNAL_HOSTNAME или подставляем вручную
-    # Если переменная не задана, используем значение по умолчанию
     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'resume-bot-a82h.onrender.com')}/{BOT_TOKEN}"
     bot.set_webhook(url=webhook_url)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
