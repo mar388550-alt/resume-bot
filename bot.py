@@ -302,7 +302,7 @@ def generate_post(topic):
 - 150-200 слов
 - Живой разговорный стиль
 - 3-5 конкретных советов
-- В конце призыв попробовать бота @asistentizi_bot для оптимизации резюме
+- В конце призыв подписаться на канал @rezumeizi (если уместно)
 - Используй эмодзи
 - Без хэштегов"""
 
@@ -758,7 +758,7 @@ def cb(call):
         except:
             send_menu(cid, t(cid,"step1"), back_main_kb(cid))
 
-    # ── ADMIN ──
+    # ── ADMIN ── (все админские callback'и сохранены)
     elif data == "admin_exit" and cid == ADMIN_ID:
         user_states[cid] = None
         try:
