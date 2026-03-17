@@ -1,13 +1,21 @@
 services:
-  - type: worker
-    name: poster-worker
+  - type: web
+    name: resume-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python poster.py
+    startCommand: python bot.py
     envVars:
       - key: BOT_TOKEN
-        sync: false   # или значение
+        sync: false
       - key: GROQ_API_KEY
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: DATABASE_URL
         sync: false
       - key: CHANNEL_ID
         value: "@rezumeizi"
+      - key: MERCHANT_ID
+        sync: false
+      - key: API_SECRET
+        sync: false
