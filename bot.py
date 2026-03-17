@@ -705,7 +705,7 @@ def cb(call):
     elif data == "info":
         try:
             bot.edit_message_text(
-                t(cid,"info_text") + get_ad_footer(),
+                t(cid, "info_text") + get_ad_footer(),
                 cid, call.message.message_id, reply_markup=info_kb(cid)
             )
         except: pass
@@ -714,7 +714,7 @@ def cb(call):
     elif data == "support":
         try:
             bot.edit_message_text(
-                t(cid,"support_text", email=SUPPORT_EMAIL) + get_ad_footer(),
+                t(cid, "support_text", email=SUPPORT_EMAIL) + get_ad_footer(),
                 cid, call.message.message_id, reply_markup=support_kb(cid)
             )
         except: pass
@@ -723,7 +723,7 @@ def cb(call):
         user_states[cid] = "writing_support"
         try:
             bot.edit_message_text(
-                t(cid,"write_support") + get_ad_footer(),
+                t(cid, "write_support") + get_ad_footer(),
                 cid, call.message.message_id, reply_markup=back_main_kb(cid)
             )
         except: pass
@@ -758,15 +758,94 @@ def cb(call):
         except:
             send_menu(cid, t(cid,"step1"), back_main_kb(cid))
 
-    # ── ADMIN ── (оставлен без изменений, см. предыдущие версии)
-    # ... (здесь должны быть все обработчики админки, они уже есть в коде, но для краткости не копирую,
-    # однако в полном файле они должны присутствовать. Вставьте их из предыдущей версии кода.
-    # Я их не удаляю, просто для экономии места не дублирую. В итоговом файле они будут.)
-    # Ниже я продолжу с остальными обработчиками.
+    # ── ADMIN ──
+    elif data == "admin_exit" and cid == ADMIN_ID:
+        user_states[cid] = None
+        try:
+            bot.edit_message_text(
+                t(cid,"main_menu") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=main_kb(cid)
+            )
+        except:
+            send_menu(cid, t(cid,"main_menu"), main_kb(cid))
 
-    # ... (остальные admin callback'ы)
-    # Убедитесь, что в вашем файле есть все admin-обработчики (admin_price, admin_days, admin_ad_toggle и т.д.)
-    # Они были в предыдущих версиях, их нужно сохранить.
+    elif data == "admin_price" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_price"
+        try:
+            bot.edit_message_text(
+                f"💰 Текущая цена: {get_setting('price')}₽\n\nВведите новую цену (0 = бесплатно):",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_days" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_days"
+        try:
+            bot.edit_message_text(
+                f"📅 Текущее кол-во дней: {get_setting('subscription_days')}\n\nВведите новое количество:",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_ad_toggle" and cid == ADMIN_ID:
+        current = get_setting("ad_active") == "1"
+        set_setting("ad_active", "0" if current else "1")
+        status = "выключена ❌" if current else "включена ✅"
+        bot.answer_callback_query(call.id, f"Реклама {status}")
+        try:
+            bot.edit_message_reply_markup(cid, call.message.message_id, reply_markup=admin_kb())
+        except: pass
+
+    elif data == "admin_ad_text" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_ad"
+        current = get_setting("ad_text") or "не задан"
+        try:
+            bot.edit_message_text(
+                f"✏️ Текущий текст рекламы:\n{current}\n\nВведите новый текст\n(будет видна внизу КАЖДОГО экрана):",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_give_sub" and cid == ADMIN_ID:
+        user_states[cid] = "admin_give_sub"
+        try:
+            bot.edit_message_text(
+                f"➕ Введите Telegram ID пользователя\n(подписка на {get_setting('subscription_days')} дней):",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_broadcast" and cid == ADMIN_ID:
+        user_states[cid] = "admin_broadcast"
+        try:
+            bot.edit_message_text(
+                "📢 Введите текст рассылки:",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_tickets" and cid == ADMIN_ID:
+        tickets = get_tickets()
+        if not tickets:
+            bot.answer_callback_query(call.id, "🎫 Обращений нет")
+        else:
+            for uid, msg in tickets:
+                kb = telebot.types.InlineKeyboardMarkup()
+                kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
+                bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
+
+    elif data.startswith("reply_") and cid == ADMIN_ID:
+        target_id = int(data.split("_")[1])
+        user_states[cid] = f"replying_{target_id}"
+        bot.send_message(cid, f"✉️ Введите ответ пользователю {target_id}:")
+
+    elif data == "admin_stats" and cid == ADMIN_ID:
+        bot.answer_callback_query(call.id, f"👥 {count_users()} польз. | 🎫 {count_tickets()} обращений")
+
+    try:
+        bot.answer_callback_query(call.id)
+    except: pass
+
 
 # ========== ОБРАБОТЧИК ДОКУМЕНТОВ ==========
 @bot.message_handler(content_types=["document"])
