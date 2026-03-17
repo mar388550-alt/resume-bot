@@ -24,9 +24,9 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Платежи Platiga
-MERCHANT_ID = os.getenv("MERCHANT_ID")               # Ваш Merchant ID (от менеджера)
-API_SECRET = os.getenv("API_SECRET")                 # Секретный ключ (от менеджера)
-PLATIGA_API_URL = "https://app.platega.io/transaction/process"  # Эндпоинт для создания платежа
+MERCHANT_ID = os.getenv("MERCHANT_ID")               # Ваш Merchant ID
+API_SECRET = os.getenv("API_SECRET")                 # Секретный ключ
+PLATIGA_API_URL = "https://app.platega.io/transaction/process"
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
@@ -150,7 +150,6 @@ def init_db():
         message TEXT,
         created_at TIMESTAMP DEFAULT NOW()
     )""")
-    # Таблица для логов платежей (опционально)
     c.execute("""CREATE TABLE IF NOT EXISTS payments (
         id SERIAL PRIMARY KEY,
         user_id BIGINT,
@@ -303,24 +302,12 @@ def send_menu(cid, text, kb):
 def create_platiga_payment(user_id, amount, description, payment_method=11, order_id=None):
     """
     Создаёт платёж в Platiga и возвращает ссылку для оплаты.
-    
-    Args:
-        user_id: ID пользователя в Telegram
-        amount: сумма платежа (число, например 100.50)
-        description: описание платежа
-        payment_method: числовой код способа оплаты (по умолчанию 11 — карты)
-        order_id: уникальный ID заказа (если не передан, генерируется)
-    
-    Returns:
-        Ссылка на платёжную страницу (поле "redirect") или None в случае ошибки
     """
     if not order_id:
         order_id = f"{user_id}_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}"
     
-    # Базовый URL для возврата пользователя в бота
     bot_url = f"https://t.me/{(bot.get_me()).username}"
     
-    # Поле payload должно быть строкой (передаём JSON)
     payload_data = json.dumps({
         "user_id": user_id,
         "order_id": order_id,
@@ -330,13 +317,13 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
     payload = {
         "paymentMethod": payment_method,
         "paymentDetails": {
-            "amount": amount,          # число, например 100.5
+            "amount": amount,
             "currency": "RUB"
         },
         "description": description,
         "return": f"{bot_url}?start=payment_success_{order_id}",
         "failedUrl": f"{bot_url}?start=payment_fail_{order_id}",
-        "payload": payload_data        # строка с JSON
+        "payload": payload_data
     }
     
     headers = {
@@ -346,7 +333,7 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
     }
     
     try:
-        logger.info(f"Creating Platiga payment for user {user_id}, amount {amount}")
+        logger.info(f"Creating Platiga payment for user {user_id}, amount {amount}, method {payment_method}")
         response = requests.post(PLATIGA_API_URL, json=payload, headers=headers, timeout=15)
         
         logger.info(f"Platiga response status: {response.status_code}")
@@ -355,7 +342,6 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
         response.raise_for_status()
         data = response.json()
         
-        # Согласно документации, ссылка находится в поле "redirect"
         payment_url = data.get("redirect")
         
         if not payment_url:
@@ -446,6 +432,19 @@ def admin_kb():
     kb.add(telebot.types.InlineKeyboardButton("🏠 Выйти из админки", callback_data="admin_exit"))
     return kb
 
+# ========== КЛАВИАТУРА ВЫБОРА МЕТОДА ОПЛАТЫ ==========
+def payment_methods_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        telebot.types.InlineKeyboardButton("💳 Карты РФ", callback_data="pay_method_11"),
+        telebot.types.InlineKeyboardButton("📱 СБП", callback_data="pay_method_2"),
+        telebot.types.InlineKeyboardButton("🌍 Международные карты", callback_data="pay_method_12"),
+        telebot.types.InlineKeyboardButton("🇧🇾 ЕРИП", callback_data="pay_method_3"),
+        telebot.types.InlineKeyboardButton("₿ Криптовалюта", callback_data="pay_method_13")
+    )
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
+    return kb
+
 # ========== ОБРАБОТЧИКИ КОМАНД ==========
 @bot.message_handler(commands=["start"])
 def start(message):
@@ -534,7 +533,7 @@ def cb(call):
         except:
             send_menu(cid, t(cid,"main_menu"), main_kb(cid))
 
-    # ── МОЯ ПОДПИСКА (с кнопкой оплаты) ──
+    # ── МОЯ ПОДПИСКА ──
     elif data == "my_sub":
         status = sub_status_text(cid)
         kb = telebot.types.InlineKeyboardMarkup()
@@ -550,7 +549,7 @@ def cb(call):
         except:
             pass
 
-    # ── ОПЛАТА ПОДПИСКИ ──
+    # ── НАЧАЛО ОПЛАТЫ (ПОКАЗ ВЫБОРА МЕТОДА) ──
     elif data == "pay_subscription":
         user = get_user(cid)
         if not user or not user["agreed"]:
@@ -559,20 +558,27 @@ def cb(call):
         if has_access(cid):
             bot.answer_callback_query(call.id, "У вас уже есть активная подписка!")
             return
+        if not MERCHANT_ID or not API_SECRET:
+            bot.answer_callback_query(call.id, "Платёжная система временно недоступна. Попробуйте позже.")
+            return
 
+        try:
+            bot.edit_message_text(
+                "Выберите способ оплаты:",
+                cid, call.message.message_id,
+                reply_markup=payment_methods_kb(cid)
+            )
+        except:
+            pass
+
+    # ── ВЫБРАН КОНКРЕТНЫЙ МЕТОД ОПЛАТЫ ──
+    elif data.startswith("pay_method_"):
+        method = int(data.split("_")[2])
         price = int(get_setting("price"))
         days = get_setting("subscription_days")
         description = f"Подписка на {days} дней"
 
-        # Проверяем, заданы ли ключи Platiga
-        if not MERCHANT_ID or not API_SECRET:
-            bot.answer_callback_query(call.id, "Платёжная система временно недоступна. Попробуйте позже.")
-            logger.error("Platiga credentials not set")
-            return
-
-        # Используем payment_method = 11 (карты) — можно заменить на выбор способа оплаты
-        payment_url = create_platiga_payment(cid, float(price), description, payment_method=11)
-
+        payment_url = create_platiga_payment(cid, float(price), description, payment_method=method)
         if payment_url:
             try:
                 bot.edit_message_text(
@@ -908,17 +914,9 @@ def webhook():
 # ========== ВЕБХУК ДЛЯ PLATIGA ==========
 @app.route("/webhook/platiga", methods=["POST"])
 def platiga_webhook():
-    """
-    Принимает уведомления от Platiga о статусе платежа.
-    Ожидаемые статусы:
-        CONFIRMED — успешная оплата
-        CANCELED — отмена
-        CHARGEBACK — возврат
-    """
     data = request.get_json()
     logger.info(f"📩 Platiga webhook received: {data}")
 
-    # Извлекаем статус и payload
     status = data.get("status")
     payload_str = data.get("payload", "{}")
     
@@ -932,12 +930,10 @@ def platiga_webhook():
     order_id = payload.get("order_id")
 
     if status == "CONFIRMED" and user_id:
-        # Активируем подписку
         days = int(get_setting("subscription_days"))
         sub_until = datetime.now() + timedelta(days=days)
         upsert_user(int(user_id), sub_until=sub_until)
         
-        # Уведомляем пользователя
         try:
             bot.send_message(
                 user_id,
@@ -958,9 +954,7 @@ def index():
 
 # ========== ЗАПУСК ==========
 if __name__ == "__main__":
-    # Устанавливаем вебхук для Telegram
     bot.remove_webhook()
-    # Используем переменную окружения RENDER_EXTERNAL_HOSTNAME или подставляем вручную
     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'resume-bot-a82h.onrender.com')}/{BOT_TOKEN}"
     bot.set_webhook(url=webhook_url)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
