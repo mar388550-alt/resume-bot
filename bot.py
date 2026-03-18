@@ -52,7 +52,7 @@ T = {
         "main_menu": "🏠 Главное меню:",
         "sub_active": "✅ Подписка активна до: {date}",
         "sub_free": "✅ Доступ открыт (бесплатно)",
-        "sub_none": "❌ Подписки нет\n\nЦена: {price}₽ / {days} дней\n\nДля оплаты: 📧 {email}",
+        "sub_none": "❌ Подписки нет\n\nЦена: {price}₽ / {days} дней",
         "need_sub": "🔒 Нужна подписка.\n\nЦена: {price}₽ / {days} дней\n\nДля оплаты: 📧 {email}",
         "btn_optimize": "🚀 Оптимизировать резюме",
         "btn_my_sub": "🎫 Моя подписка",
@@ -91,7 +91,7 @@ T = {
         "main_menu": "🏠 Main menu:",
         "sub_active": "✅ Subscription until: {date}",
         "sub_free": "✅ Access is free",
-        "sub_none": "❌ No subscription\n\nPrice: {price}₽ / {days} days\n\nTo pay: 📧 {email}",
+        "sub_none": "❌ No subscription\n\nPrice: {price}₽ / {days} days",
         "need_sub": "🔒 Subscription required.\n\nPrice: {price}₽ / {days} days\n\nTo pay: 📧 {email}",
         "btn_optimize": "🚀 Optimize resume",
         "btn_my_sub": "🎫 My subscription",
@@ -394,7 +394,8 @@ def sub_status_text(uid):
     user = get_user(uid)
     if user and user["sub_until"] and user["sub_until"] > datetime.now():
         return t(uid, "sub_active", date=user["sub_until"].strftime("%d.%m.%Y"))
-    return t(uid, "sub_none", price=price, days=days, email=SUPPORT_EMAIL)
+    # Убрали email из вызова
+    return t(uid, "sub_none", price=price, days=days)
 
 def get_ad_footer():
     if get_setting("ad_active") == "1":
