@@ -358,8 +358,8 @@ def scheduled_job():
         logger.error("Failed to post after retries, will try again tomorrow with same topic.")
 
 def run_scheduler():
-    logger.info("Scheduler thread started. Daily post at 07:00 UTC")
-    schedule.every().day.at("07:00").do(scheduled_job)
+    logger.info("Scheduler thread started. Daily post at 07:05 UTC")
+    schedule.every().day.at("07:05").do(scheduled_job)
     while True:
         schedule.run_pending()
         time.sleep(60)
