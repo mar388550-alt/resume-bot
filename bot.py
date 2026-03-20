@@ -270,7 +270,7 @@ def get_all_users():
     conn.close()
     return rows
 
-# ========== НОВЫЕ ФУНКЦИИ ДЛЯ СТАТИСТИКИ ==========
+# ========== СТАТИСТИКА ==========
 def get_stats():
     conn = get_conn()
     c = conn.cursor()
@@ -557,7 +557,6 @@ def admin_kb():
     kb.add(telebot.types.InlineKeyboardButton("➕ Выдать подписку", callback_data="admin_give_sub"))
     kb.add(telebot.types.InlineKeyboardButton("📢 Рассылка всем", callback_data="admin_broadcast"))
     kb.add(telebot.types.InlineKeyboardButton("🎫 Обращения", callback_data="admin_tickets"))
-    # Одна кнопка статистики (вместо двух)
     kb.add(telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"))
     kb.add(telebot.types.InlineKeyboardButton("🔗 ЛК Platiga", url=PLATIGA_LK_URL))
     kb.add(telebot.types.InlineKeyboardButton("🏠 Выйти из админки", callback_data="admin_exit"))
@@ -616,15 +615,247 @@ def cb(call):
     cid = call.message.chat.id
     data = call.data
 
-    # ── ЯЗЫК, AGREE, MAIN MENU, MY SUB, PAYMENT и т.д. ──
-    # (код уже есть, я оставлю основную логику, но здесь для краткости не буду дублировать 500 строк.
-    # В финальном файле нужно сохранить все обработчики. Я приведу только новые/изменённые фрагменты.
-    # В реальном коде они должны быть вместе с остальными обработчиками.
+    # ── ЯЗЫК ──
+    if data in ("lang_ru", "lang_en"):
+        lang = data.split("_")[1]
+        upsert_user(cid, lang=lang)
+        bot.answer_callback_query(call.id, T[lang]["lang_changed"])
+        user = get_user(cid)
+        if user and user["agreed"]:
+            try:
+                bot.edit_message_text(
+                    t(cid,"main_menu") + get_ad_footer(),
+                    cid, call.message.message_id, reply_markup=main_kb(cid)
+                )
+            except:
+                send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+        else:
+            try:
+                bot.edit_message_text(
+                    t(cid,"welcome") + get_ad_footer(),
+                    cid, call.message.message_id, reply_markup=agree_kb(cid)
+                )
+            except:
+                send_menu(cid, t(cid,"welcome"), agree_kb(cid))
 
-    # ... (все существующие обработчики остаются без изменений) ...
+    # ── AGREE ──
+    elif data == "agree":
+        upsert_user(cid, agreed=True)
+        try:
+            bot.edit_message_text(
+                t(cid,"main_menu") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=main_kb(cid)
+            )
+            user_menu_msg[cid] = call.message.message_id
+        except:
+            send_menu(cid, t(cid,"main_menu"), main_kb(cid))
 
-    # НОВЫЙ ОБРАБОТЧИК ДЛЯ СТАТИСТИКИ (вместо admin_stats и admin_users)
-    if data == "admin_stats" and cid == ADMIN_ID:
+    # ── MAIN MENU ──
+    elif data == "back_main":
+        user_states[cid] = None
+        try:
+            bot.edit_message_text(
+                t(cid,"main_menu") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=main_kb(cid)
+            )
+            user_menu_msg[cid] = call.message.message_id
+        except:
+            send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+
+    # ── МОЯ ПОДПИСКА ──
+    elif data == "my_sub":
+        status = sub_status_text(cid)
+        kb = telebot.types.InlineKeyboardMarkup()
+        if not has_access(cid) and get_setting("price") != "0":
+            kb.add(telebot.types.InlineKeyboardButton("💳 Оплатить подписку", callback_data="pay_subscription"))
+        kb.add(telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main"))
+        try:
+            bot.edit_message_text(
+                status + get_ad_footer(),
+                cid, call.message.message_id,
+                reply_markup=kb
+            )
+        except:
+            pass
+
+    # ── НАЧАЛО ОПЛАТЫ ──
+    elif data == "pay_subscription":
+        user = get_user(cid)
+        if not user or not user["agreed"]:
+            bot.answer_callback_query(call.id, t(cid,"need_agree"))
+            return
+        if has_access(cid):
+            bot.answer_callback_query(call.id, "У вас уже есть активная подписка!")
+            return
+        if not MERCHANT_ID or not API_SECRET:
+            bot.answer_callback_query(call.id, "Платёжная система временно недоступна. Попробуйте позже.")
+            return
+
+        try:
+            bot.edit_message_text(
+                "Выберите способ оплаты:",
+                cid, call.message.message_id,
+                reply_markup=payment_methods_kb(cid)
+            )
+        except:
+            pass
+
+    # ── ВЫБРАН МЕТОД ОПЛАТЫ ──
+    elif data.startswith("pay_method_"):
+        method = int(data.split("_")[2])
+        price = int(get_setting("price"))
+        days = get_setting("subscription_days")
+        description = f"Подписка на {days} дней"
+
+        payment_url = create_platiga_payment(cid, float(price), description, payment_method=method)
+        if payment_url:
+            try:
+                bot.edit_message_text(
+                    f"💳 Для оплаты перейдите по ссылке:\n{payment_url}\n\nПосле оплаты подписка активируется автоматически.",
+                    cid, call.message.message_id,
+                    reply_markup=telebot.types.InlineKeyboardMarkup().add(
+                        telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main")
+                    )
+                )
+            except:
+                pass
+        else:
+            bot.answer_callback_query(call.id, "Ошибка создания платежа, попробуйте позже.")
+
+    # ── ИНФОРМАЦИЯ ──
+    elif data == "info":
+        try:
+            bot.edit_message_text(
+                t(cid, "info_text") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=info_kb(cid)
+            )
+        except: pass
+
+    # ── ПОДДЕРЖКА ──
+    elif data == "support":
+        try:
+            bot.edit_message_text(
+                t(cid, "support_text", email=SUPPORT_EMAIL) + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=support_kb(cid)
+            )
+        except: pass
+
+    elif data == "write_support":
+        user_states[cid] = "writing_support"
+        try:
+            bot.edit_message_text(
+                t(cid, "write_support") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    # ── FLOW ──
+    elif data == "start_flow":
+        user = get_user(cid)
+        if not user or not user["agreed"]:
+            bot.answer_callback_query(call.id, t(cid,"need_agree"))
+            return
+        if not has_access(cid):
+            price = get_setting("price")
+            days = get_setting("subscription_days")
+            try:
+                bot.edit_message_text(
+                    t(cid,"need_sub",price=price,days=days,email=SUPPORT_EMAIL) + get_ad_footer(),
+                    cid, call.message.message_id,
+                    reply_markup=telebot.types.InlineKeyboardMarkup().add(
+                        telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main")
+                    )
+                )
+            except: pass
+            return
+        user_states[cid] = "waiting_resume"
+        user_data.setdefault(cid, {})["resume"] = ""
+        try:
+            bot.edit_message_text(
+                t(cid,"step1") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+            user_menu_msg[cid] = call.message.message_id
+        except:
+            send_menu(cid, t(cid,"step1"), back_main_kb(cid))
+
+    # ── АДМИНКА ──
+    elif data == "admin_exit" and cid == ADMIN_ID:
+        user_states[cid] = None
+        try:
+            bot.edit_message_text(
+                t(cid,"main_menu") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=main_kb(cid)
+            )
+        except:
+            send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+
+    elif data == "admin_price" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_price"
+        try:
+            bot.edit_message_text(
+                f"💰 Текущая цена: {get_setting('price')}₽\n\nВведите новую цену (0 = бесплатно):",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_days" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_days"
+        try:
+            bot.edit_message_text(
+                f"📅 Текущее кол-во дней: {get_setting('subscription_days')}\n\nВведите новое количество:",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_ad_toggle" and cid == ADMIN_ID:
+        current = get_setting("ad_active") == "1"
+        set_setting("ad_active", "0" if current else "1")
+        status = "выключена ❌" if current else "включена ✅"
+        bot.answer_callback_query(call.id, f"Реклама {status}")
+        try:
+            bot.edit_message_reply_markup(cid, call.message.message_id, reply_markup=admin_kb())
+        except: pass
+
+    elif data == "admin_ad_text" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_ad"
+        current = get_setting("ad_text") or "не задан"
+        try:
+            bot.edit_message_text(
+                f"✏️ Текущий текст рекламы:\n{current}\n\nВведите новый текст\n(будет видна внизу КАЖДОГО экрана):",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_give_sub" and cid == ADMIN_ID:
+        user_states[cid] = "admin_give_sub"
+        try:
+            bot.edit_message_text(
+                f"➕ Введите Telegram ID пользователя\n(подписка на {get_setting('subscription_days')} дней):",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_broadcast" and cid == ADMIN_ID:
+        user_states[cid] = "admin_broadcast"
+        try:
+            bot.edit_message_text(
+                "📢 Введите текст рассылки:",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_tickets" and cid == ADMIN_ID:
+        tickets = get_tickets()
+        if not tickets:
+            bot.answer_callback_query(call.id, "🎫 Обращений нет")
+        else:
+            for uid, msg in tickets:
+                kb = telebot.types.InlineKeyboardMarkup()
+                kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
+                bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
+
+    elif data == "admin_stats" and cid == ADMIN_ID:
         total_users, active_subs, today_subs, total_subs = get_stats()
         users = get_users_list(offset=0, limit=20)
         stats_text = (
@@ -654,19 +885,179 @@ def cb(call):
     elif data == "back_admin" and cid == ADMIN_ID:
         _show_admin(cid)
 
-    # Остальные обработчики (admin_price, admin_days, admin_ad_toggle, admin_ad_text,
-    # admin_give_sub, admin_broadcast, admin_tickets, reply_*, и т.д.) остаются без изменений.
-    # Их нужно вставить из предыдущего кода.
-
-    # ... (здесь должны быть остальные admin-обработчики, которые я не стал писать заново) ...
+    elif data.startswith("reply_") and cid == ADMIN_ID:
+        target_id = int(data.split("_")[1])
+        user_states[cid] = f"replying_{target_id}"
+        bot.send_message(cid, f"✉️ Введите ответ пользователю {target_id}:")
 
     try:
         bot.answer_callback_query(call.id)
     except: pass
 
-# ========== ОБРАБОТЧИК ДОКУМЕНТОВ И ТЕКСТА ==========
-# (весь этот код уже есть в предыдущих версиях, я его не удаляю, просто для краткости не копирую,
-# но в итоговом файле он должен присутствовать полностью)
+
+# ========== ОБРАБОТЧИК ДОКУМЕНТОВ ==========
+@bot.message_handler(content_types=["document"])
+def doc_handler(message):
+    cid = message.chat.id
+    if user_states.get(cid) != "waiting_resume":
+        return
+    doc = message.document
+    if not doc.file_name.endswith(".txt"):
+        bot.send_message(cid, t(cid,"only_txt"))
+        return
+    file_info = bot.get_file(doc.file_id)
+    downloaded = bot.download_file(file_info.file_path)
+    user_data.setdefault(cid, {})["resume"] = downloaded.decode("utf-8")
+    user_states[cid] = "waiting_vacancy"
+    send_menu(cid, t(cid,"step2"), back_resume_kb(cid))
+
+# ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
+@bot.message_handler(content_types=["text"])
+def text_handler(message):
+    cid = message.chat.id
+    text = message.text
+    state = user_states.get(cid)
+
+    if text.startswith("/"):
+        return
+
+    if state == "writing_support":
+        save_ticket(cid, text)
+        user_states[cid] = None
+        try: bot.delete_message(cid, message.message_id)
+        except: pass
+        send_menu(cid, t(cid,"support_sent",email=SUPPORT_EMAIL) + "\n\n" + t(cid,"main_menu"), main_kb(cid))
+        try:
+            bot.send_message(ADMIN_ID, f"🎫 От {cid}:\n\n{text}")
+        except: pass
+        return
+
+    if state and state.startswith("replying_") and cid == ADMIN_ID:
+        target_id = int(state.split("_")[1])
+        try:
+            bot.send_message(target_id, f"📨 Ответ от поддержки:\n\n{text}")
+            delete_ticket(target_id)
+        except Exception as e:
+            bot.send_message(cid, f"❌ Ошибка: {e}")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_set_price" and cid == ADMIN_ID:
+        try:
+            set_setting("price", int(text))
+            user_states[cid] = None
+            _show_admin(cid)
+        except:
+            bot.send_message(cid, "❌ Введите число.")
+        return
+
+    if state == "admin_set_days" and cid == ADMIN_ID:
+        try:
+            set_setting("subscription_days", int(text))
+            user_states[cid] = None
+            _show_admin(cid)
+        except:
+            bot.send_message(cid, "❌ Введите число.")
+        return
+
+    if state == "admin_set_ad" and cid == ADMIN_ID:
+        set_setting("ad_text", text)
+        set_setting("ad_active", "1")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_give_sub" and cid == ADMIN_ID:
+        try:
+            target_id = int(text.strip())
+            days = int(get_setting("subscription_days"))
+            sub_until = datetime.now() + timedelta(days=days)
+            sub_start = datetime.now()
+            upsert_user(target_id, sub_until=sub_until, sub_start=sub_start)
+            date_str = sub_until.strftime("%d.%m.%Y")
+            try:
+                bot.send_message(target_id, f"🎉 Подписка выдана до {date_str}!", reply_markup=main_kb(target_id))
+            except: pass
+        except:
+            bot.send_message(cid, "❌ Неверный ID.")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_broadcast" and cid == ADMIN_ID:
+        users = get_all_users()
+        sent = 0
+        for uid in users:
+            try:
+                bot.send_message(uid, f"📢 {text}")
+                sent += 1
+            except: pass
+        bot.send_message(cid, f"✅ Отправлено {sent}/{len(users)}")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    user = get_user(cid)
+    if not user or not user["agreed"]:
+        send_menu(cid, t(cid,"need_agree"), agree_kb(cid))
+        return
+
+    if state == "waiting_resume":
+        if len(text) < 50:
+            bot.send_message(cid, t(cid,"too_short_resume"))
+            return
+        user_data.setdefault(cid, {})["resume"] = text
+        user_states[cid] = "waiting_vacancy"
+        send_menu(cid, t(cid,"step2"), back_resume_kb(cid))
+
+    elif state == "waiting_vacancy":
+        if re.match(r'https?://\S+', text.strip()):
+            bot.send_message(cid, t(cid,"no_links"))
+            return
+        if len(text) < 30:
+            bot.send_message(cid, t(cid,"too_short_vacancy"))
+            return
+
+        resume = user_data.get(cid, {}).get("resume", "")
+        user_states[cid] = None
+        delete_prev_menu(cid)
+        proc_msg = bot.send_message(cid, t(cid,"processing"))
+
+        lang = get_lang(cid)
+        try:
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT[lang]},
+                    {"role": "user", "content": f"RESUME:\n{resume}\n\n===\n\nVACANCY:\n{text}"}
+                ],
+                max_tokens=2000,
+                temperature=0.1
+            )
+            result = response.choices[0].message.content
+
+            try: bot.delete_message(cid, proc_msg.message_id)
+            except: pass
+
+            full_text = t(cid,"result_title") + result
+            if len(full_text) > 4000:
+                bot.send_message(cid, t(cid,"result_title"))
+                for i in range(0, len(result), 4000):
+                    bot.send_message(cid, result[i:i+4000])
+            else:
+                bot.send_message(cid, full_text)
+
+            send_menu(cid, t(cid,"result_next"), result_kb(cid))
+
+        except Exception as e:
+            logger.error(f"Groq error: {e}")
+            try: bot.delete_message(cid, proc_msg.message_id)
+            except: pass
+            send_menu(cid, t(cid,"error"), main_kb(cid))
+
+    else:
+        send_menu(cid, t(cid,"main_menu"), main_kb(cid))
 
 # ========== ВЕБХУКИ ==========
 @app.route("/" + BOT_TOKEN, methods=["POST"])
