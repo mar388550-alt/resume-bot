@@ -23,12 +23,20 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
-CHANNEL_ID = os.getenv("CHANNEL_ID", "@rezumeizi")  # канал для постов
+
+# Канал для постов: если переменная содержит URL БД (по ошибке), используем значение по умолчанию
+raw_channel = os.getenv("CHANNEL_ID", "@rezumeizi")
+if raw_channel and ("postgresql://" in raw_channel or "@dpg-" in raw_channel):
+    logger.warning(f"CHANNEL_ID содержит строку БД, заменяем на @rezumeizi")
+    CHANNEL_ID = "@rezumeizi"
+else:
+    CHANNEL_ID = raw_channel if raw_channel else "@rezumeizi"
 
 # Платежи Platiga
 MERCHANT_ID = os.getenv("MERCHANT_ID")
 API_SECRET = os.getenv("API_SECRET")
 PLATIGA_API_URL = "https://app.platega.io/transaction/process"
+PLATIGA_LK_URL = "https://app.platega.io/"  # ссылка на личный кабинет
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
@@ -142,8 +150,11 @@ def init_db():
         agreed BOOLEAN DEFAULT FALSE,
         lang TEXT DEFAULT 'ru',
         sub_until TIMESTAMP DEFAULT NULL,
+        sub_start TIMESTAMP DEFAULT NULL,
         created_at TIMESTAMP DEFAULT NOW()
     )""")
+    # Добавляем колонку sub_start, если её ещё нет
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_start TIMESTAMP DEFAULT NULL")
     c.execute("""CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY, value TEXT
     )""")
@@ -185,7 +196,7 @@ def get_user(uid):
     conn.close()
     return row
 
-def upsert_user(uid, agreed=None, lang=None, sub_until=None):
+def upsert_user(uid, agreed=None, lang=None, sub_until=None, sub_start=None):
     conn = get_conn()
     c = conn.cursor()
     c.execute("INSERT INTO users(user_id) VALUES(%s) ON CONFLICT(user_id) DO NOTHING", (uid,))
@@ -195,6 +206,8 @@ def upsert_user(uid, agreed=None, lang=None, sub_until=None):
         c.execute("UPDATE users SET lang=%s WHERE user_id=%s", (lang, uid))
     if sub_until is not None:
         c.execute("UPDATE users SET sub_until=%s WHERE user_id=%s", (sub_until, uid))
+    if sub_start is not None:
+        c.execute("UPDATE users SET sub_start=%s WHERE user_id=%s", (sub_start, uid))
     conn.commit()
     conn.close()
 
@@ -256,6 +269,36 @@ def get_all_users():
     c = conn.cursor()
     c.execute("SELECT user_id FROM users")
     rows = [r[0] for r in c.fetchall()]
+    conn.close()
+    return rows
+
+# ========== НОВЫЕ ФУНКЦИИ ДЛЯ СТАТИСТИКИ ==========
+def get_stats():
+    """Возвращает кортеж: (total_users, active_subs, today_subs, total_subs)"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    total_users = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM users WHERE sub_until > NOW()")
+    active_subs = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM users WHERE sub_start >= DATE_TRUNC('day', NOW())")
+    today_subs = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM users WHERE sub_start IS NOT NULL")
+    total_subs = c.fetchone()[0]
+    conn.close()
+    return total_users, active_subs, today_subs, total_subs
+
+def get_users_list(offset=0, limit=20):
+    """Возвращает список пользователей с ID и датами окончания подписки (с пагинацией)."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT user_id, sub_until 
+        FROM users 
+        ORDER BY user_id 
+        LIMIT %s OFFSET %s
+    """, (limit, offset))
+    rows = c.fetchall()
     conn.close()
     return rows
 
@@ -394,7 +437,6 @@ def sub_status_text(uid):
     user = get_user(uid)
     if user and user["sub_until"] and user["sub_until"] > datetime.now():
         return t(uid, "sub_active", date=user["sub_until"].strftime("%d.%m.%Y"))
-    # Убрали email из вызова
     return t(uid, "sub_none", price=price, days=days)
 
 def get_ad_footer():
@@ -538,7 +580,10 @@ def admin_kb():
     kb.add(telebot.types.InlineKeyboardButton("➕ Выдать подписку", callback_data="admin_give_sub"))
     kb.add(telebot.types.InlineKeyboardButton("📢 Рассылка всем", callback_data="admin_broadcast"))
     kb.add(telebot.types.InlineKeyboardButton("🎫 Обращения", callback_data="admin_tickets"))
-    kb.add(telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"))
+    # Новые кнопки:
+    kb.add(telebot.types.InlineKeyboardButton("📊 Подробная статистика", callback_data="admin_stats"))
+    kb.add(telebot.types.InlineKeyboardButton("👥 Список пользователей", callback_data="admin_users"))
+    kb.add(telebot.types.InlineKeyboardButton("🔗 ЛК Platiga", url=PLATIGA_LK_URL))
     kb.add(telebot.types.InlineKeyboardButton("🏠 Выйти из админки", callback_data="admin_exit"))
     return kb
 
@@ -759,7 +804,7 @@ def cb(call):
         except:
             send_menu(cid, t(cid,"step1"), back_main_kb(cid))
 
-    # ── ADMIN ── (все админские callback'и сохранены)
+    # ── АДМИНКА ──
     elif data == "admin_exit" and cid == ADMIN_ID:
         user_states[cid] = None
         try:
@@ -835,13 +880,60 @@ def cb(call):
                 kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
                 bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
 
+    elif data == "admin_stats" and cid == ADMIN_ID:
+        # Подробная статистика вместо всплывающего окна
+        total_users, active_subs, today_subs, total_subs = get_stats()
+        stats_text = (
+            f"📊 **Статистика**\n\n"
+            f"👥 Всего пользователей: **{total_users}**\n"
+            f"✅ Активных подписок: **{active_subs}**\n"
+            f"📅 Подписок за сегодня: **{today_subs}**\n"
+            f"📈 Всего подписок (за всё время): **{total_subs}**"
+        )
+        bot.edit_message_text(
+            stats_text,
+            cid, call.message.message_id,
+            reply_markup=telebot.types.InlineKeyboardMarkup().add(
+                telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_admin")
+            )
+        )
+
+    elif data == "admin_users" and cid == ADMIN_ID:
+        # Показываем первые 20 пользователей
+        users = get_users_list(offset=0, limit=20)
+        if not users:
+            bot.edit_message_text(
+                "👥 Список пользователей пуст.",
+                cid, call.message.message_id,
+                reply_markup=telebot.types.InlineKeyboardMarkup().add(
+                    telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_admin")
+                )
+            )
+        else:
+            text = "👥 **Список пользователей (первые 20):**\n\n"
+            for uid, sub_until in users:
+                if sub_until:
+                    date_str = sub_until.strftime("%d.%m.%Y")
+                    text += f"`{uid}` — до {date_str}\n"
+                else:
+                    text += f"`{uid}` — без подписки\n"
+            kb = telebot.types.InlineKeyboardMarkup()
+            kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_admin"))
+            # Кнопка "Далее" (для пагинации) можно добавить позже
+            bot.edit_message_text(
+                text,
+                cid, call.message.message_id,
+                reply_markup=kb
+            )
+
+    elif data == "back_admin" and cid == ADMIN_ID:
+        # Возврат в админ-панель
+        _show_admin(cid)
+
     elif data.startswith("reply_") and cid == ADMIN_ID:
         target_id = int(data.split("_")[1])
         user_states[cid] = f"replying_{target_id}"
         bot.send_message(cid, f"✉️ Введите ответ пользователю {target_id}:")
-
-    elif data == "admin_stats" and cid == ADMIN_ID:
-        bot.answer_callback_query(call.id, f"👥 {count_users()} польз. | 🎫 {count_tickets()} обращений")
 
     try:
         bot.answer_callback_query(call.id)
@@ -926,7 +1018,8 @@ def text_handler(message):
             target_id = int(text.strip())
             days = int(get_setting("subscription_days"))
             sub_until = datetime.now() + timedelta(days=days)
-            upsert_user(target_id, sub_until=sub_until)
+            sub_start = datetime.now()
+            upsert_user(target_id, sub_until=sub_until, sub_start=sub_start)
             date_str = sub_until.strftime("%d.%m.%Y")
             try:
                 bot.send_message(target_id, f"🎉 Подписка выдана до {date_str}!", reply_markup=main_kb(target_id))
@@ -1037,7 +1130,8 @@ def platiga_webhook():
     if status == "CONFIRMED" and user_id:
         days = int(get_setting("subscription_days"))
         sub_until = datetime.now() + timedelta(days=days)
-        upsert_user(int(user_id), sub_until=sub_until)
+        sub_start = datetime.now()
+        upsert_user(int(user_id), sub_until=sub_until, sub_start=sub_start)
         try:
             bot.send_message(
                 user_id,
@@ -1046,6 +1140,14 @@ def platiga_webhook():
             )
         except Exception as e:
             logger.error(f"Failed to notify user {user_id}: {e}")
+    return "OK", 200
+
+# ========== ЭНДПОИНТ ДЛЯ CRON-JOB.ORG ==========
+@app.route("/cron/post", methods=["GET"])
+def cron_post():
+    """Запускает публикацию поста по вызову из внешнего планировщика."""
+    threading.Thread(target=scheduled_job).start()
+    logger.info("Cron endpoint triggered, post generation started")
     return "OK", 200
 
 @app.route("/")
