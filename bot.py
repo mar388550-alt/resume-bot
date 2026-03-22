@@ -36,6 +36,7 @@ else:
 MERCHANT_ID = os.getenv("MERCHANT_ID")
 API_SECRET = os.getenv("API_SECRET")
 PLATIGA_API_URL = "https://app.platega.io/transaction/process"
+# Ссылка на личный кабинет Platiga (может не открываться в РФ, но это уже не наша проблема)
 PLATIGA_LK_URL = "https://app.platega.io/"
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
@@ -557,7 +558,9 @@ def admin_kb():
     kb.add(telebot.types.InlineKeyboardButton("➕ Выдать подписку", callback_data="admin_give_sub"))
     kb.add(telebot.types.InlineKeyboardButton("📢 Рассылка всем", callback_data="admin_broadcast"))
     kb.add(telebot.types.InlineKeyboardButton("🎫 Обращения", callback_data="admin_tickets"))
+    # Кнопка статистики (одна)
     kb.add(telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"))
+    # Ссылка на ЛК Platiga (используем URL)
     kb.add(telebot.types.InlineKeyboardButton("🔗 ЛК Platiga", url=PLATIGA_LK_URL))
     kb.add(telebot.types.InlineKeyboardButton("🏠 Выйти из админки", callback_data="admin_exit"))
     return kb
@@ -855,6 +858,7 @@ def cb(call):
                 kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
                 bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
 
+    # ====== НОВЫЙ ОБРАБОТЧИК СТАТИСТИКИ ======
     elif data == "admin_stats" and cid == ADMIN_ID:
         total_users, active_subs, today_subs, total_subs = get_stats()
         users = get_users_list(offset=0, limit=20)
