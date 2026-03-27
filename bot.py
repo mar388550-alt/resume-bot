@@ -31,7 +31,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Канал для постов: защита от случайного указания строки БД
+# Канал для постов
 raw_channel = os.getenv("CHANNEL_ID", "@rezumeizi")
 if raw_channel and ("postgresql://" in raw_channel or "@dpg-" in raw_channel):
     logger.warning(f"CHANNEL_ID содержит строку БД, заменяем на @rezumeizi")
@@ -44,7 +44,6 @@ logger.info(f"CHANNEL_ID = {CHANNEL_ID}")
 MERCHANT_ID = os.getenv("MERCHANT_ID")
 API_SECRET = os.getenv("API_SECRET")
 PLATIGA_API_URL = "https://app.platega.io/transaction/process"
-# Исправленная ссылка на ЛК Platiga (без поддомена app)
 PLATIGA_LK_URL = "https://platega.io/"
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
@@ -158,6 +157,7 @@ def get_conn():
 def init_db():
     conn = get_conn()
     c = conn.cursor()
+    # Создаём таблицу users, если её нет
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id BIGINT PRIMARY KEY,
         agreed BOOLEAN DEFAULT FALSE,
@@ -166,7 +166,16 @@ def init_db():
         sub_start TIMESTAMP DEFAULT NULL,
         created_at TIMESTAMP DEFAULT NOW()
     )""")
-    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_start TIMESTAMP DEFAULT NULL")
+    # Принудительно добавляем колонку sub_start, если её ещё нет
+    c.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name='users' AND column_name='sub_start') THEN
+                ALTER TABLE users ADD COLUMN sub_start TIMESTAMP DEFAULT NULL;
+            END IF;
+        END $$;
+    """)
     c.execute("""CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY, value TEXT
     )""")
@@ -476,7 +485,6 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
     bot_url = f"https://t.me/{(bot.get_me()).username}"
     payload_data = json.dumps({"user_id": user_id, "order_id": order_id, "type": "subscription"}, ensure_ascii=False)
     
-    # Явно указываем webhook_url
     webhook_url = "https://resume-bot-a82h.onrender.com/webhook/platiga"
     
     payload = {
@@ -486,7 +494,7 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
         "return": f"{bot_url}?start=payment_success_{order_id}",
         "failedUrl": f"{bot_url}?start=payment_fail_{order_id}",
         "payload": payload_data,
-        "webhook_url": webhook_url  # Добавлено!
+        "webhook_url": webhook_url
     }
     
     headers = {
