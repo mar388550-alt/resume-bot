@@ -3,10 +3,9 @@ import re
 import logging
 import uuid
 import json
-import time
 import threading
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request
 import telebot
 from groq import Groq
@@ -22,7 +21,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
-CHANNEL_ID = os.getenv("CHANNEL_ID", "@rezumeizi")   # канал для постов
+CHANNEL_ID = os.getenv("CHANNEL_ID", "@rezumeizi")
 
 MERCHANT_ID = os.getenv("MERCHANT_ID")
 API_SECRET = os.getenv("API_SECRET")
@@ -82,6 +81,7 @@ T = {
         "only_txt": "⚠️ Только .txt. Скопируй текст и отправь как сообщение.",
         "error": "❌ Ошибка. Попробуй ещё раз.",
         "lang_changed": "✅ Язык: Русский",
+        "payment_success": "✅ Оплата прошла успешно!\nПодписка активна до {date}.",
     },
     "en": {
         "choose_lang": "🌍 Выберите язык / Choose language:",
@@ -121,6 +121,7 @@ T = {
         "only_txt": "⚠️ Only .txt. Copy text and send as message.",
         "error": "❌ Error. Try again.",
         "lang_changed": "✅ Language: English",
+        "payment_success": "✅ Payment successful!\nSubscription active until {date}.",
     }
 }
 
@@ -133,82 +134,89 @@ SYSTEM_PROMPT = {
 def get_conn():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
-def ensure_column_exists():
-    conn = get_conn()
-    c = conn.cursor()
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_start TIMESTAMP DEFAULT NULL")
-        logger.info("✅ Колонка sub_start проверена/добавлена (IF NOT EXISTS)")
-    except Exception as e:
-        logger.error(f"Ошибка при добавлении колонки: {e}")
-    conn.commit()
-    conn.close()
-
 def init_db():
     conn = get_conn()
     c = conn.cursor()
+
+    # Основная таблица пользователей
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id BIGINT PRIMARY KEY,
         agreed BOOLEAN DEFAULT FALSE,
         lang TEXT DEFAULT 'ru',
-        sub_until TIMESTAMP DEFAULT NULL,
-        sub_start TIMESTAMP DEFAULT NULL,
-        created_at TIMESTAMP DEFAULT NOW()
+        sub_start TIMESTAMP WITH TIME ZONE,
+        sub_end TIMESTAMP WITH TIME ZONE,
+        is_subscribed BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     )""")
-    ensure_column_exists()
-    c.execute("""CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY, value TEXT
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS tickets (
-        user_id BIGINT PRIMARY KEY,
-        message TEXT,
-        created_at TIMESTAMP DEFAULT NOW()
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS payments (
-        id SERIAL PRIMARY KEY,
-        user_id BIGINT,
-        order_id TEXT,
-        amount INTEGER,
-        status TEXT,
-        created_at TIMESTAMP DEFAULT NOW()
-    )""")
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS poster_state (
-            key VARCHAR(50) PRIMARY KEY,
-            value INTEGER
-        )
-    """)
-    c.execute("""
-        INSERT INTO poster_state (key, value) 
-        VALUES ('topic_index', 0) 
-        ON CONFLICT (key) DO NOTHING
-    """)
-    for key, val in [("price","0"),("subscription_days","30"),("ad_text",""),("ad_active","0")]:
-        c.execute("INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO NOTHING", (key,val))
+
+    # Остальные таблицы
+    c.execute("""CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS tickets (user_id BIGINT PRIMARY KEY, message TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW())""")
+    c.execute("""CREATE TABLE IF NOT EXISTS payments (id SERIAL PRIMARY KEY, user_id BIGINT, order_id TEXT, amount INTEGER, status TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW())""")
+    c.execute("""CREATE TABLE IF NOT EXISTS poster_state (key VARCHAR(50) PRIMARY KEY, value INTEGER)""")
+
+    # Начальные настройки
+    c.execute("""INSERT INTO poster_state (key, value) VALUES ('topic_index', 0) ON CONFLICT (key) DO NOTHING""")
+
+    for key, val in [("price","10"), ("subscription_days","7"), ("ad_text",""), ("ad_active","0")]:
+        c.execute("INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO NOTHING", (key, val))
+
     conn.commit()
     conn.close()
-    logger.info("База данных инициализирована")
+    logger.info("✅ База данных инициализирована")
+
+def ensure_subscription_columns():
+    """Гарантированное добавление колонок (на случай, если таблица уже существовала в старой структуре)"""
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_start TIMESTAMP WITH TIME ZONE")
+        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_end TIMESTAMP WITH TIME ZONE")
+        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_subscribed BOOLEAN DEFAULT FALSE")
+        logger.info("✅ Колонки подписки проверены/добавлены")
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении колонок: {e}")
+    finally:
+        conn.commit()
+        conn.close()
 
 def get_user(uid):
     conn = get_conn()
     c = conn.cursor(cursor_factory=RealDictCursor)
-    c.execute("SELECT * FROM users WHERE user_id=%s", (uid,))
+    c.execute("SELECT * FROM users WHERE user_id = %s", (uid,))
     row = c.fetchone()
     conn.close()
     return row
 
-def upsert_user(uid, agreed=None, lang=None, sub_until=None, sub_start=None):
+def upsert_user(uid, agreed=None, lang=None, sub_end=None, sub_start=None, is_subscribed=None):
     conn = get_conn()
     c = conn.cursor()
+
     c.execute("INSERT INTO users(user_id) VALUES(%s) ON CONFLICT(user_id) DO NOTHING", (uid,))
+
+    updates = []
+    params = []
     if agreed is not None:
-        c.execute("UPDATE users SET agreed=%s WHERE user_id=%s", (agreed, uid))
+        updates.append("agreed = %s")
+        params.append(agreed)
     if lang is not None:
-        c.execute("UPDATE users SET lang=%s WHERE user_id=%s", (lang, uid))
-    if sub_until is not None:
-        c.execute("UPDATE users SET sub_until=%s WHERE user_id=%s", (sub_until, uid))
+        updates.append("lang = %s")
+        params.append(lang)
+    if sub_end is not None:
+        updates.append("sub_end = %s")
+        params.append(sub_end)
     if sub_start is not None:
-        c.execute("UPDATE users SET sub_start=%s WHERE user_id=%s", (sub_start, uid))
+        updates.append("sub_start = %s")
+        params.append(sub_start)
+    if is_subscribed is not None:
+        updates.append("is_subscribed = %s")
+        params.append(is_subscribed)
+
+    if updates:
+        query = f"UPDATE users SET {', '.join(updates)} WHERE user_id = %s"
+        params.append(uid)
+        c.execute(query, params)
+
     conn.commit()
     conn.close()
 
@@ -223,14 +231,20 @@ def get_setting(key):
 def set_setting(key, value):
     conn = get_conn()
     c = conn.cursor()
-    c.execute("INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET value=%s", (key,str(value),str(value)))
+    c.execute(
+        "INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET value=%s",
+        (key, str(value), str(value))
+    )
     conn.commit()
     conn.close()
 
 def save_ticket(uid, message):
     conn = get_conn()
     c = conn.cursor()
-    c.execute("INSERT INTO tickets(user_id,message) VALUES(%s,%s) ON CONFLICT(user_id) DO UPDATE SET message=%s,created_at=NOW()", (uid,message,message))
+    c.execute(
+        "INSERT INTO tickets(user_id,message) VALUES(%s,%s) ON CONFLICT(user_id) DO UPDATE SET message=%s,created_at=NOW()",
+        (uid, message, message)
+    )
     conn.commit()
     conn.close()
 
@@ -273,7 +287,46 @@ def get_all_users():
     conn.close()
     return rows
 
-# ========== СТАТИСТИКА ==========
+# ========== ФУНКЦИИ ПОДПИСКИ ==========
+def has_access(uid):
+    if get_setting("price") == "0":
+        return True
+    user = get_user(uid)
+    if not user or not user.get("sub_end"):
+        return False
+    return user["sub_end"] > datetime.now(timezone.utc)
+
+def sub_status_text(uid):
+    price = get_setting("price")
+    days = get_setting("subscription_days")
+    if price == "0":
+        return t(uid, "sub_free")
+
+    user = get_user(uid)
+    if user and user.get("sub_end") and user["sub_end"] > datetime.now(timezone.utc):
+        date_str = user["sub_end"].strftime("%d.%m.%Y")
+        return t(uid, "sub_active", date=date_str)
+
+    return t(uid, "sub_none", price=price, days=days)
+
+def activate_subscription(user_id: int, days: int = None):
+    if days is None:
+        days = int(get_setting("subscription_days") or 7)
+
+    now = datetime.now(timezone.utc)
+    sub_end = now + timedelta(days=days)
+
+    upsert_user(
+        user_id,
+        sub_start=now,
+        sub_end=sub_end,
+        is_subscribed=True
+    )
+
+    logger.info(f"✅ Подписка активирована для {user_id} до {sub_end}")
+    return sub_end
+
+# ========== ФУНКЦИИ СТАТИСТИКИ ==========
 def get_stats():
     conn = get_conn()
     c = conn.cursor()
@@ -281,13 +334,13 @@ def get_stats():
         c.execute("SELECT COUNT(*) FROM users")
         total_users = c.fetchone()[0]
 
-        c.execute("SELECT COUNT(*) FROM users WHERE sub_until > NOW()")
+        c.execute("SELECT COUNT(*) FROM users WHERE is_subscribed = TRUE AND sub_end > NOW()")
         active_subs = c.fetchone()[0]
 
         c.execute("SELECT COUNT(*) FROM users WHERE sub_start >= DATE_TRUNC('day', NOW())")
         today_subs = c.fetchone()[0]
 
-        c.execute("SELECT COUNT(*) FROM users WHERE sub_start IS NOT NULL")
+        c.execute("SELECT COUNT(*) FROM users WHERE is_subscribed = TRUE")
         total_subs = c.fetchone()[0]
     except Exception as e:
         logger.error(f"Ошибка в get_stats: {e}")
@@ -300,16 +353,16 @@ def get_users_list(offset=0, limit=20):
     conn = get_conn()
     c = conn.cursor()
     c.execute("""
-        SELECT user_id, sub_until 
-        FROM users 
-        ORDER BY user_id 
+        SELECT user_id, sub_end
+        FROM users
+        ORDER BY user_id
         LIMIT %s OFFSET %s
     """, (limit, offset))
     rows = c.fetchall()
     conn.close()
     return rows
 
-# ---------- Функции для постинга ----------
+# ========== ФУНКЦИИ ПОСТИНГА ==========
 def load_topic_index():
     conn = get_conn()
     c = conn.cursor()
@@ -395,7 +448,6 @@ def post_with_retry(topic, retries=3):
     return False
 
 def scheduled_job():
-    """Выполняет публикацию поста. Вызывается по cron-эндпоинту."""
     topic_index = load_topic_index()
     topic = TOPICS_RU[topic_index % len(TOPICS_RU)]
     logger.info(f"Starting scheduled job for topic index {topic_index}: {topic}")
@@ -407,7 +459,7 @@ def scheduled_job():
     else:
         logger.error("Failed to post after retries, will try again tomorrow with same topic.")
 
-# ========== ФУНКЦИЯ ДЛЯ СОЗДАНИЯ ПЛАТЕЖА ==========
+# ========== ФУНКЦИЯ СОЗДАНИЯ ПЛАТЕЖА ==========
 def create_platiga_payment(user_id, amount, description, payment_method=11, order_id=None):
     if not order_id:
         order_id = f"{user_id}_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}"
@@ -449,18 +501,55 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
         logger.error(f"Platiga payment creation failed: {e}")
         return None
 
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+def t(uid, key, **kwargs):
+    user = get_user(uid)
+    lang = user["lang"] if user else "ru"
+    text = T.get(lang, T["ru"]).get(key, key)
+    return text.format(**kwargs) if kwargs else text
+
+def get_lang(uid):
+    user = get_user(uid)
+    return user["lang"] if user else "ru"
+
+def get_ad_footer():
+    if get_setting("ad_active") == "1":
+        ad = get_setting("ad_text")
+        if ad:
+            return f"\n\n━━━━━━━━━━━━━━━\n📢 {ad}"
+    return ""
+
+def delete_prev_menu(cid):
+    if cid in user_menu_msg:
+        try:
+            bot.delete_message(cid, user_menu_msg[cid])
+        except:
+            pass
+        del user_menu_msg[cid]
+
+def send_menu(cid, text, kb):
+    delete_prev_menu(cid)
+    ad = get_ad_footer()
+    msg = bot.send_message(cid, text + ad, reply_markup=kb)
+    user_menu_msg[cid] = msg.message_id
+    return msg
+
 # ========== КЛАВИАТУРЫ ==========
 def lang_kb():
     kb = telebot.types.InlineKeyboardMarkup()
-    kb.row(telebot.types.InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
-           telebot.types.InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"))
+    kb.row(
+        telebot.types.InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+        telebot.types.InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
+    )
     return kb
 
 def agree_kb(uid):
     kb = telebot.types.InlineKeyboardMarkup()
     kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_agree"), callback_data="agree"))
-    kb.row(telebot.types.InlineKeyboardButton(t(uid,"btn_policy"), url=PRIVACY_URL),
-           telebot.types.InlineKeyboardButton(t(uid,"btn_terms"), url=TERMS_URL))
+    kb.row(
+        telebot.types.InlineKeyboardButton(t(uid,"btn_policy"), url=PRIVACY_URL),
+        telebot.types.InlineKeyboardButton(t(uid,"btn_terms"), url=TERMS_URL)
+    )
     return kb
 
 def main_kb(uid):
@@ -474,8 +563,10 @@ def main_kb(uid):
 
 def info_kb(uid):
     kb = telebot.types.InlineKeyboardMarkup()
-    kb.row(telebot.types.InlineKeyboardButton(t(uid,"btn_policy"), url=PRIVACY_URL),
-           telebot.types.InlineKeyboardButton(t(uid,"btn_terms"), url=TERMS_URL))
+    kb.row(
+        telebot.types.InlineKeyboardButton(t(uid,"btn_policy"), url=PRIVACY_URL),
+        telebot.types.InlineKeyboardButton(t(uid,"btn_terms"), url=TERMS_URL)
+    )
     kb.add(telebot.types.InlineKeyboardButton("📢 Наш канал", url="https://t.me/rezumeizi"))
     kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_back"), callback_data="back_main"))
     return kb
@@ -532,54 +623,6 @@ def payment_methods_kb(uid):
     )
     kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
     return kb
-
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-def t(uid, key, **kwargs):
-    user = get_user(uid)
-    lang = user["lang"] if user else "ru"
-    text = T.get(lang, T["ru"]).get(key, key)
-    return text.format(**kwargs) if kwargs else text
-
-def get_lang(uid):
-    user = get_user(uid)
-    return user["lang"] if user else "ru"
-
-def has_access(uid):
-    if get_setting("price") == "0":
-        return True
-    user = get_user(uid)
-    return bool(user and user["sub_until"] and user["sub_until"] > datetime.now())
-
-def sub_status_text(uid):
-    price = get_setting("price")
-    days = get_setting("subscription_days")
-    if price == "0":
-        return t(uid, "sub_free")
-    user = get_user(uid)
-    if user and user["sub_until"] and user["sub_until"] > datetime.now():
-        return t(uid, "sub_active", date=user["sub_until"].strftime("%d.%m.%Y"))
-    return t(uid, "sub_none", price=price, days=days)
-
-def get_ad_footer():
-    if get_setting("ad_active") == "1":
-        ad = get_setting("ad_text")
-        if ad:
-            return f"\n\n━━━━━━━━━━━━━━━\n📢 {ad}"
-    return ""
-
-def delete_prev_menu(cid):
-    if cid in user_menu_msg:
-        try:
-            bot.delete_message(cid, user_menu_msg[cid])
-        except: pass
-        del user_menu_msg[cid]
-
-def send_menu(cid, text, kb):
-    delete_prev_menu(cid)
-    ad = get_ad_footer()
-    msg = bot.send_message(cid, text + ad, reply_markup=kb)
-    user_menu_msg[cid] = msg.message_id
-    return msg
 
 # ========== ОБРАБОТЧИКИ КОМАНД ==========
 @bot.message_handler(commands=["start"])
@@ -875,9 +918,9 @@ def cb(call):
             f"👥 **Список пользователей (первые 20):**\n"
         )
         if users:
-            for uid, sub_until in users:
-                if sub_until:
-                    date_str = sub_until.strftime("%d.%m.%Y")
+            for uid, sub_end in users:
+                if sub_end:
+                    date_str = sub_end.strftime("%d.%m.%Y")
                     stats_text += f"`{uid}` — до {date_str}\n"
                 else:
                     stats_text += f"`{uid}` — без подписки\n"
@@ -900,7 +943,8 @@ def cb(call):
 
     try:
         bot.answer_callback_query(call.id)
-    except: pass
+    except:
+        pass
 
 
 # ========== ОБРАБОТЧИК ДОКУМЕНТОВ ==========
@@ -932,12 +976,15 @@ def text_handler(message):
     if state == "writing_support":
         save_ticket(cid, text)
         user_states[cid] = None
-        try: bot.delete_message(cid, message.message_id)
-        except: pass
+        try:
+            bot.delete_message(cid, message.message_id)
+        except:
+            pass
         send_menu(cid, t(cid,"support_sent",email=SUPPORT_EMAIL) + "\n\n" + t(cid,"main_menu"), main_kb(cid))
         try:
             bot.send_message(ADMIN_ID, f"🎫 От {cid}:\n\n{text}")
-        except: pass
+        except:
+            pass
         return
 
     if state and state.startswith("replying_") and cid == ADMIN_ID:
@@ -985,11 +1032,9 @@ def text_handler(message):
                 # Если пользователь не найден, создаём запись
                 upsert_user(target_id)
                 logger.info(f"Создана запись для пользователя {target_id} при выдаче подписки")
-            days = int(get_setting("subscription_days"))
-            sub_until = datetime.now() + timedelta(days=days)
-            sub_start = datetime.now()
-            upsert_user(target_id, sub_until=sub_until, sub_start=sub_start)
-            date_str = sub_until.strftime("%d.%m.%Y")
+            days = int(get_setting("subscription_days") or 7)
+            sub_end = activate_subscription(target_id, days)
+            date_str = sub_end.strftime("%d.%m.%Y")
             try:
                 bot.send_message(target_id, f"🎉 Подписка выдана до {date_str}!", reply_markup=main_kb(target_id))
             except Exception as e:
@@ -1056,8 +1101,10 @@ def text_handler(message):
             )
             result = response.choices[0].message.content
 
-            try: bot.delete_message(cid, proc_msg.message_id)
-            except: pass
+            try:
+                bot.delete_message(cid, proc_msg.message_id)
+            except:
+                pass
 
             full_text = t(cid,"result_title") + result
             if len(full_text) > 4000:
@@ -1071,18 +1118,30 @@ def text_handler(message):
 
         except Exception as e:
             logger.error(f"Groq error: {e}")
-            try: bot.delete_message(cid, proc_msg.message_id)
-            except: pass
+            try:
+                bot.delete_message(cid, proc_msg.message_id)
+            except:
+                pass
             send_menu(cid, t(cid,"error"), main_kb(cid))
 
     else:
         send_menu(cid, t(cid,"main_menu"), main_kb(cid))
 
-# ========== ВЕБХУК ДЛЯ PLATIGA ==========
+# ========== ВЕБХУКИ ==========
+@app.route("/" + BOT_TOKEN, methods=["POST"])
+def webhook():
+    try:
+        json_str = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+    return "OK", 200
+
 @app.route("/webhook/platiga", methods=["POST"])
 def platiga_webhook():
     data = request.get_json(silent=True) or {}
-    logger.info(f"📩 Platiga webhook RAW: {json.dumps(data, ensure_ascii=False, indent=2)}")
+    logger.info(f"📩 Platiga webhook: {json.dumps(data, ensure_ascii=False, indent=2)}")
 
     status = data.get("status")
     payload_str = data.get("payload") or "{}"
@@ -1097,38 +1156,25 @@ def platiga_webhook():
         payload = {}
 
     user_id = payload.get("user_id")
-    order_id = payload.get("order_id")
-
-    logger.info(f"Parsed → status={status}, user_id={user_id}, order_id={order_id}")
 
     if status == "CONFIRMED" and user_id:
         try:
             user_id = int(user_id)
-            days = int(get_setting("subscription_days"))
-            sub_until = datetime.now() + timedelta(days=days)
-            sub_start = datetime.now()
+            sub_end = activate_subscription(user_id)
 
-            upsert_user(user_id, sub_until=sub_until, sub_start=sub_start)
-
-            logger.info(f"✅ Подписка активирована для {user_id} до {sub_until}")
-
-            try:
-                bot.send_message(
-                    user_id,
-                    f"✅ Оплата прошла успешно!\nПодписка активна до {sub_until.strftime('%d.%m.%Y')}.",
-                    reply_markup=main_kb(user_id)
-                )
-            except Exception as e:
-                logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
-
+            date_str = sub_end.strftime("%d.%m.%Y %H:%M")
+            bot.send_message(
+                user_id,
+                t(user_id, "payment_success", date=date_str),
+                reply_markup=main_kb(user_id)
+            )
         except Exception as e:
-            logger.error(f"Ошибка активации подписки: {e}")
+            logger.error(f"Ошибка активации подписки через webhook: {e}")
     else:
-        logger.warning(f"⚠️ Webhook без активации: status={status}, user_id={user_id}")
+        logger.warning(f"Webhook без активации: status={status}, user_id={user_id}")
 
     return "OK", 200
 
-# ========== ЭНДПОИНТ ДЛЯ ВНЕШНЕГО КРОНА ==========
 @app.route("/cron/post", methods=["GET"])
 def cron_post():
     if not MERCHANT_ID or not API_SECRET:
@@ -1137,24 +1183,18 @@ def cron_post():
     logger.info("Cron endpoint triggered, post generation started")
     return "OK", 200
 
-# ========== ВЕБХУК ДЛЯ TELEGRAM ==========
-@app.route("/" + BOT_TOKEN, methods=["POST"])
-def webhook():
-    try:
-        json_str = request.get_data().decode("utf-8")
-        update = telebot.types.Update.de_json(json_str)
-        bot.process_new_updates([update])
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-    return "OK", 200
-
 @app.route("/")
 def index():
     return "Bot is running!", 200
 
+# ========== ЗАПУСК ==========
 if __name__ == "__main__":
     init_db()
+    ensure_subscription_columns()
+
     bot.remove_webhook()
-    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'resume-bot-a82h.onrender.com')}/{BOT_TOKEN}"
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
     bot.set_webhook(url=webhook_url)
+
+    logger.info(f"Webhook установлен: {webhook_url}")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
