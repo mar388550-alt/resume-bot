@@ -42,16 +42,98 @@ user_states = {}
 user_data = {}
 user_menu_msg = {}
 
-# ========== ПЕРЕВОДЫ (сокращено для краткости, в реальном файле нужно оставить полный словарь) ==========
-# (я не копирую весь T, он должен остаться из предыдущей версии. В финальном файле он есть.)
-# Для экономии места в ответе приведу только структуру. При замене кода используйте ваш полный T.
+# ========== ПЕРЕВОДЫ ==========
+T = {
+    "ru": {
+        "choose_lang": "🌍 Выберите язык / Choose language:",
+        "welcome": "👋 Привет!\n\nЯ адаптирую резюме под вакансию и оптимизирую под ATS-проверку.\n\nПримите условия использования:",
+        "agreed": "✅ Условия приняты!",
+        "main_menu": "🏠 Главное меню:",
+        "sub_active": "✅ Подписка активна до: {date}",
+        "sub_free": "✅ Доступ открыт (бесплатно)",
+        "sub_none": "❌ Подписки нет\n\nЦена: {price}₽ / {days} дней",
+        "need_sub": "🔒 Нужна подписка.\n\nЦена: {price}₽ / {days} дней\n\nДля оплаты: 📧 {email}",
+        "btn_optimize": "🚀 Оптимизировать резюме",
+        "btn_my_sub": "🎫 Моя подписка",
+        "btn_info": "ℹ️ Информация",
+        "btn_support": "🆘 Поддержка",
+        "btn_back": "◀️ Назад",
+        "btn_back_menu": "◀️ Назад в меню",
+        "btn_back_resume": "◀️ Ввести резюме заново",
+        "btn_again": "🔄 Оптимизировать ещё раз",
+        "btn_home": "🏠 Главное меню",
+        "btn_policy": "📄 Политика",
+        "btn_terms": "📋 Соглашение",
+        "btn_agree": "✅ Принимаю условия",
+        "btn_write_support": "✉️ Написать вопрос",
+        "info_text": "ℹ️ Информация\n\n🤖 Бот оптимизации резюме\nАдаптирует резюме под вакансию с учётом ATS.\n\n📢 Наш канал: @rezumeizi",
+        "support_text": "🆘 Поддержка\n\n📧 {email}\n\nНапишите вопрос прямо здесь:",
+        "write_support": "✉️ Напишите ваш вопрос:",
+        "support_sent": "✅ Вопрос отправлен! Ответим на {email}",
+        "step1": "📄 Шаг 1 из 2 — Резюме\n\nОтправь резюме текстом или .txt файлом:",
+        "step2": "✅ Резюме получено!\n\n📋 Шаг 2 из 2 — Вакансия\n\nТеперь вставь текст вакансии:",
+        "processing": "⏳ Оптимизирую резюме...",
+        "result_title": "✅ Готово!\n\n",
+        "result_next": "💡 Что дальше?",
+        "need_agree": "⚠️ Сначала примите условия.",
+        "too_short_resume": "⚠️ Текст слишком короткий.",
+        "too_short_vacancy": "⚠️ Текст вакансии слишком короткий.",
+        "no_links": "🔗 Ссылки не поддерживаются. Скопируй текст вакансии.",
+        "only_txt": "⚠️ Только .txt. Скопируй текст и отправь как сообщение.",
+        "error": "❌ Ошибка. Попробуй ещё раз.",
+        "lang_changed": "✅ Язык: Русский",
+    },
+    "en": {
+        "choose_lang": "🌍 Выберите язык / Choose language:",
+        "welcome": "👋 Hello!\n\nI adapt resumes for vacancies and optimize for ATS.\n\nPlease accept the terms:",
+        "agreed": "✅ Terms accepted!",
+        "main_menu": "🏠 Main menu:",
+        "sub_active": "✅ Subscription until: {date}",
+        "sub_free": "✅ Access is free",
+        "sub_none": "❌ No subscription\n\nPrice: {price}₽ / {days} days",
+        "need_sub": "🔒 Subscription required.\n\nPrice: {price}₽ / {days} days\n\nTo pay: 📧 {email}",
+        "btn_optimize": "🚀 Optimize resume",
+        "btn_my_sub": "🎫 My subscription",
+        "btn_info": "ℹ️ Information",
+        "btn_support": "🆘 Support",
+        "btn_back": "◀️ Back",
+        "btn_back_menu": "◀️ Back to menu",
+        "btn_back_resume": "◀️ Re-enter resume",
+        "btn_again": "🔄 Optimize again",
+        "btn_home": "🏠 Main menu",
+        "btn_policy": "📄 Privacy Policy",
+        "btn_terms": "📋 Terms",
+        "btn_agree": "✅ I accept",
+        "btn_write_support": "✉️ Write question",
+        "info_text": "ℹ️ Information\n\n🤖 Resume Optimization Bot\nAdapts resumes for vacancies with ATS.\n\n📢 Our channel: @rezumeizi",
+        "support_text": "🆘 Support\n\n📧 {email}\n\nWrite your question here:",
+        "write_support": "✉️ Write your question:",
+        "support_sent": "✅ Sent! We'll reply to {email}",
+        "step1": "📄 Step 1 of 2 — Resume\n\nSend resume as text or .txt file:",
+        "step2": "✅ Resume received!\n\n📋 Step 2 of 2 — Vacancy\n\nPaste vacancy text:",
+        "processing": "⏳ Optimizing resume...",
+        "result_title": "✅ Done!\n\n",
+        "result_next": "💡 What next?",
+        "need_agree": "⚠️ Accept terms first.",
+        "too_short_resume": "⚠️ Text too short.",
+        "too_short_vacancy": "⚠️ Vacancy text too short.",
+        "no_links": "🔗 Links not supported. Copy vacancy text.",
+        "only_txt": "⚠️ Only .txt. Copy text and send as message.",
+        "error": "❌ Error. Try again.",
+        "lang_changed": "✅ Language: English",
+    }
+}
+
+SYSTEM_PROMPT = {
+    "ru": "Ты эксперт по оптимизации резюме. Кратко и чётко адаптируй резюме под вакансию: добавь ключевые слова, оптимизируй под ATS. Сохрани реальные данные. В конце 2-3 строки: процент соответствия и главное что изменено.",
+    "en": "You are a resume expert. Briefly adapt the resume for the vacancy: add keywords, optimize for ATS. Keep real data. End with 2-3 lines: match % and key changes."
+}
 
 # ========== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ДАННЫХ ==========
 def get_conn():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 def ensure_column_exists():
-    """Гарантированно добавляет колонку sub_start, если её нет."""
     conn = get_conn()
     c = conn.cursor()
     try:
@@ -73,7 +155,7 @@ def init_db():
         sub_start TIMESTAMP DEFAULT NULL,
         created_at TIMESTAMP DEFAULT NOW()
     )""")
-    ensure_column_exists()  # <-- принудительная проверка
+    ensure_column_exists()
     c.execute("""CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY, value TEXT
     )""")
@@ -191,7 +273,7 @@ def get_all_users():
     conn.close()
     return rows
 
-# ========== СТАТИСТИКА (с обработкой ошибок) ==========
+# ========== СТАТИСТИКА ==========
 def get_stats():
     conn = get_conn()
     c = conn.cursor()
@@ -367,8 +449,89 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
         logger.error(f"Platiga payment creation failed: {e}")
         return None
 
-# ========== КЛАВИАТУРЫ (здесь оставьте полный набор из вашего кода) ==========
-# (не копирую для краткости, но в финальном файле они должны быть)
+# ========== КЛАВИАТУРЫ ==========
+def lang_kb():
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.row(telebot.types.InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+           telebot.types.InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"))
+    return kb
+
+def agree_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_agree"), callback_data="agree"))
+    kb.row(telebot.types.InlineKeyboardButton(t(uid,"btn_policy"), url=PRIVACY_URL),
+           telebot.types.InlineKeyboardButton(t(uid,"btn_terms"), url=TERMS_URL))
+    return kb
+
+def main_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    if has_access(uid):
+        kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_optimize"), callback_data="start_flow"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_my_sub"), callback_data="my_sub"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_info"), callback_data="info"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_support"), callback_data="support"))
+    return kb
+
+def info_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.row(telebot.types.InlineKeyboardButton(t(uid,"btn_policy"), url=PRIVACY_URL),
+           telebot.types.InlineKeyboardButton(t(uid,"btn_terms"), url=TERMS_URL))
+    kb.add(telebot.types.InlineKeyboardButton("📢 Наш канал", url="https://t.me/rezumeizi"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_back"), callback_data="back_main"))
+    return kb
+
+def support_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_write_support"), callback_data="write_support"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_back"), callback_data="back_main"))
+    return kb
+
+def back_main_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_back_menu"), callback_data="back_main"))
+    return kb
+
+def back_resume_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_back_resume"), callback_data="start_flow"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_home"), callback_data="back_main"))
+    return kb
+
+def result_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_again"), callback_data="start_flow"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_home"), callback_data="back_main"))
+    return kb
+
+def admin_kb():
+    price = get_setting("price")
+    days = get_setting("subscription_days")
+    ad_active = get_setting("ad_active") == "1"
+    price_text = f"{price}₽" if price != "0" else "Бесплатно"
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton(f"💰 Цена: {price_text}", callback_data="admin_price"))
+    kb.add(telebot.types.InlineKeyboardButton(f"📅 Дней подписки: {days}", callback_data="admin_days"))
+    kb.add(telebot.types.InlineKeyboardButton(f"📢 Реклама: {'✅ Вкл' if ad_active else '❌ Выкл'}", callback_data="admin_ad_toggle"))
+    kb.add(telebot.types.InlineKeyboardButton("✏️ Текст рекламы", callback_data="admin_ad_text"))
+    kb.add(telebot.types.InlineKeyboardButton("➕ Выдать подписку", callback_data="admin_give_sub"))
+    kb.add(telebot.types.InlineKeyboardButton("📢 Рассылка всем", callback_data="admin_broadcast"))
+    kb.add(telebot.types.InlineKeyboardButton("🎫 Обращения", callback_data="admin_tickets"))
+    kb.add(telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"))
+    kb.add(telebot.types.InlineKeyboardButton("🔗 ЛК Platiga", url=PLATIGA_LK_URL))
+    kb.add(telebot.types.InlineKeyboardButton("🏠 Выйти из админки", callback_data="admin_exit"))
+    return kb
+
+def payment_methods_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        telebot.types.InlineKeyboardButton("💳 Карты РФ", callback_data="pay_method_11"),
+        telebot.types.InlineKeyboardButton("📱 СБП", callback_data="pay_method_2"),
+        telebot.types.InlineKeyboardButton("🌍 Международные карты", callback_data="pay_method_12"),
+        telebot.types.InlineKeyboardButton("🇧🇾 ЕРИП", callback_data="pay_method_3"),
+        telebot.types.InlineKeyboardButton("₿ Криптовалюта", callback_data="pay_method_13")
+    )
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
+    return kb
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def t(uid, key, **kwargs):
@@ -419,9 +582,503 @@ def send_menu(cid, text, kb):
     return msg
 
 # ========== ОБРАБОТЧИКИ КОМАНД ==========
-# (здесь должны быть все ваши обработчики – /start, /admin, и т.д. – они уже есть в предыдущей версии)
+@bot.message_handler(commands=["start"])
+def start(message):
+    cid = message.chat.id
+    user_states[cid] = None
+    upsert_user(cid)
+    delete_prev_menu(cid)
+    msg = bot.send_message(cid, T["ru"]["choose_lang"], reply_markup=lang_kb())
+    user_menu_msg[cid] = msg.message_id
 
-# ========== ВЕБХУК ДЛЯ PLATIGA (исправленный) ==========
+@bot.message_handler(commands=["admin"])
+def admin_cmd(message):
+    if message.chat.id != ADMIN_ID:
+        bot.send_message(message.chat.id, "⛔ Нет доступа.")
+        return
+    _show_admin(message.chat.id)
+
+def _show_admin(cid):
+    delete_prev_menu(cid)
+    price = get_setting("price")
+    days = get_setting("subscription_days")
+    ad_text = get_setting("ad_text") or "не задан"
+    ad_active = get_setting("ad_active") == "1"
+    msg = bot.send_message(cid,
+        f"⚙️ Админ панель\n\n"
+        f"💰 Цена: {price}₽\n"
+        f"📅 Дней подписки: {days}\n"
+        f"📢 Реклама: {'✅ Вкл' if ad_active else '❌ Выкл'}\n"
+        f"📝 Текст рекламы: {ad_text}\n\n"
+        f"🎫 Обращений: {count_tickets()}\n"
+        f"👥 Пользователей: {count_users()}",
+        reply_markup=admin_kb()
+    )
+    user_menu_msg[cid] = msg.message_id
+
+# ========== ОБРАБОТЧИК INLINE КНОПОК ==========
+@bot.callback_query_handler(func=lambda call: True)
+def cb(call):
+    cid = call.message.chat.id
+    data = call.data
+
+    # ── ЯЗЫК ──
+    if data in ("lang_ru", "lang_en"):
+        lang = data.split("_")[1]
+        upsert_user(cid, lang=lang)
+        bot.answer_callback_query(call.id, T[lang]["lang_changed"])
+        user = get_user(cid)
+        if user and user["agreed"]:
+            try:
+                bot.edit_message_text(
+                    t(cid,"main_menu") + get_ad_footer(),
+                    cid, call.message.message_id, reply_markup=main_kb(cid)
+                )
+            except:
+                send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+        else:
+            try:
+                bot.edit_message_text(
+                    t(cid,"welcome") + get_ad_footer(),
+                    cid, call.message.message_id, reply_markup=agree_kb(cid)
+                )
+            except:
+                send_menu(cid, t(cid,"welcome"), agree_kb(cid))
+
+    # ── AGREE ──
+    elif data == "agree":
+        upsert_user(cid, agreed=True)
+        try:
+            bot.edit_message_text(
+                t(cid,"main_menu") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=main_kb(cid)
+            )
+            user_menu_msg[cid] = call.message.message_id
+        except:
+            send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+
+    # ── MAIN MENU ──
+    elif data == "back_main":
+        user_states[cid] = None
+        try:
+            bot.edit_message_text(
+                t(cid,"main_menu") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=main_kb(cid)
+            )
+            user_menu_msg[cid] = call.message.message_id
+        except:
+            send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+
+    # ── МОЯ ПОДПИСКА ──
+    elif data == "my_sub":
+        status = sub_status_text(cid)
+        kb = telebot.types.InlineKeyboardMarkup()
+        if not has_access(cid) and get_setting("price") != "0":
+            kb.add(telebot.types.InlineKeyboardButton("💳 Оплатить подписку", callback_data="pay_subscription"))
+        kb.add(telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main"))
+        try:
+            bot.edit_message_text(
+                status + get_ad_footer(),
+                cid, call.message.message_id,
+                reply_markup=kb
+            )
+        except:
+            pass
+
+    # ── НАЧАЛО ОПЛАТЫ ──
+    elif data == "pay_subscription":
+        user = get_user(cid)
+        if not user or not user["agreed"]:
+            bot.answer_callback_query(call.id, t(cid,"need_agree"))
+            return
+        if has_access(cid):
+            bot.answer_callback_query(call.id, "У вас уже есть активная подписка!")
+            return
+        if not MERCHANT_ID or not API_SECRET:
+            bot.answer_callback_query(call.id, "Платёжная система временно недоступна. Попробуйте позже.")
+            return
+
+        try:
+            bot.edit_message_text(
+                "Выберите способ оплаты:",
+                cid, call.message.message_id,
+                reply_markup=payment_methods_kb(cid)
+            )
+        except:
+            pass
+
+    # ── ВЫБРАН МЕТОД ОПЛАТЫ ──
+    elif data.startswith("pay_method_"):
+        method = int(data.split("_")[2])
+        price = int(get_setting("price"))
+        days = get_setting("subscription_days")
+        description = f"Подписка на {days} дней"
+
+        payment_url = create_platiga_payment(cid, float(price), description, payment_method=method)
+        if payment_url:
+            try:
+                bot.edit_message_text(
+                    f"💳 Для оплаты перейдите по ссылке:\n{payment_url}\n\nПосле оплаты подписка активируется автоматически.",
+                    cid, call.message.message_id,
+                    reply_markup=telebot.types.InlineKeyboardMarkup().add(
+                        telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main")
+                    )
+                )
+            except:
+                pass
+        else:
+            bot.answer_callback_query(call.id, "Ошибка создания платежа, попробуйте позже.")
+
+    # ── ИНФОРМАЦИЯ ──
+    elif data == "info":
+        try:
+            bot.edit_message_text(
+                t(cid, "info_text") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=info_kb(cid)
+            )
+        except: pass
+
+    # ── ПОДДЕРЖКА ──
+    elif data == "support":
+        try:
+            bot.edit_message_text(
+                t(cid, "support_text", email=SUPPORT_EMAIL) + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=support_kb(cid)
+            )
+        except: pass
+
+    elif data == "write_support":
+        user_states[cid] = "writing_support"
+        try:
+            bot.edit_message_text(
+                t(cid, "write_support") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    # ── FLOW ──
+    elif data == "start_flow":
+        user = get_user(cid)
+        if not user or not user["agreed"]:
+            bot.answer_callback_query(call.id, t(cid,"need_agree"))
+            return
+        if not has_access(cid):
+            price = get_setting("price")
+            days = get_setting("subscription_days")
+            try:
+                bot.edit_message_text(
+                    t(cid,"need_sub",price=price,days=days,email=SUPPORT_EMAIL) + get_ad_footer(),
+                    cid, call.message.message_id,
+                    reply_markup=telebot.types.InlineKeyboardMarkup().add(
+                        telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main")
+                    )
+                )
+            except: pass
+            return
+        user_states[cid] = "waiting_resume"
+        user_data.setdefault(cid, {})["resume"] = ""
+        try:
+            bot.edit_message_text(
+                t(cid,"step1") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+            user_menu_msg[cid] = call.message.message_id
+        except:
+            send_menu(cid, t(cid,"step1"), back_main_kb(cid))
+
+    # ── АДМИНКА ──
+    elif data == "admin_exit" and cid == ADMIN_ID:
+        user_states[cid] = None
+        try:
+            bot.edit_message_text(
+                t(cid,"main_menu") + get_ad_footer(),
+                cid, call.message.message_id, reply_markup=main_kb(cid)
+            )
+        except:
+            send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+
+    elif data == "admin_price" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_price"
+        try:
+            bot.edit_message_text(
+                f"💰 Текущая цена: {get_setting('price')}₽\n\nВведите новую цену (0 = бесплатно):",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_days" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_days"
+        try:
+            bot.edit_message_text(
+                f"📅 Текущее кол-во дней: {get_setting('subscription_days')}\n\nВведите новое количество:",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_ad_toggle" and cid == ADMIN_ID:
+        current = get_setting("ad_active") == "1"
+        set_setting("ad_active", "0" if current else "1")
+        status = "выключена ❌" if current else "включена ✅"
+        bot.answer_callback_query(call.id, f"Реклама {status}")
+        try:
+            bot.edit_message_reply_markup(cid, call.message.message_id, reply_markup=admin_kb())
+        except: pass
+
+    elif data == "admin_ad_text" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_ad"
+        current = get_setting("ad_text") or "не задан"
+        try:
+            bot.edit_message_text(
+                f"✏️ Текущий текст рекламы:\n{current}\n\nВведите новый текст\n(будет видна внизу КАЖДОГО экрана):",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_give_sub" and cid == ADMIN_ID:
+        user_states[cid] = "admin_give_sub"
+        try:
+            bot.edit_message_text(
+                f"➕ Введите Telegram ID пользователя\n(подписка на {get_setting('subscription_days')} дней):",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_broadcast" and cid == ADMIN_ID:
+        user_states[cid] = "admin_broadcast"
+        try:
+            bot.edit_message_text(
+                "📢 Введите текст рассылки:",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
+        except: pass
+
+    elif data == "admin_tickets" and cid == ADMIN_ID:
+        tickets = get_tickets()
+        if not tickets:
+            bot.answer_callback_query(call.id, "🎫 Обращений нет")
+        else:
+            for uid, msg in tickets:
+                kb = telebot.types.InlineKeyboardMarkup()
+                kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
+                bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
+
+    # ====== СТАТИСТИКА ======
+    elif data == "admin_stats" and cid == ADMIN_ID:
+        total_users, active_subs, today_subs, total_subs = get_stats()
+        users = get_users_list(offset=0, limit=20)
+        stats_text = (
+            f"📊 **Статистика**\n\n"
+            f"👥 Всего пользователей: **{total_users}**\n"
+            f"✅ Активных подписок: **{active_subs}**\n"
+            f"📅 Подписок за сегодня: **{today_subs}**\n"
+            f"📈 Всего подписок: **{total_subs}**\n\n"
+            f"👥 **Список пользователей (первые 20):**\n"
+        )
+        if users:
+            for uid, sub_until in users:
+                if sub_until:
+                    date_str = sub_until.strftime("%d.%m.%Y")
+                    stats_text += f"`{uid}` — до {date_str}\n"
+                else:
+                    stats_text += f"`{uid}` — без подписки\n"
+        else:
+            stats_text += "Нет пользователей.\n"
+        kb = telebot.types.InlineKeyboardMarkup()
+        kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_admin"))
+        try:
+            bot.edit_message_text(stats_text, cid, call.message.message_id, reply_markup=kb, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
+
+    elif data == "back_admin" and cid == ADMIN_ID:
+        _show_admin(cid)
+
+    elif data.startswith("reply_") and cid == ADMIN_ID:
+        target_id = int(data.split("_")[1])
+        user_states[cid] = f"replying_{target_id}"
+        bot.send_message(cid, f"✉️ Введите ответ пользователю {target_id}:")
+
+    try:
+        bot.answer_callback_query(call.id)
+    except: pass
+
+
+# ========== ОБРАБОТЧИК ДОКУМЕНТОВ ==========
+@bot.message_handler(content_types=["document"])
+def doc_handler(message):
+    cid = message.chat.id
+    if user_states.get(cid) != "waiting_resume":
+        return
+    doc = message.document
+    if not doc.file_name.endswith(".txt"):
+        bot.send_message(cid, t(cid,"only_txt"))
+        return
+    file_info = bot.get_file(doc.file_id)
+    downloaded = bot.download_file(file_info.file_path)
+    user_data.setdefault(cid, {})["resume"] = downloaded.decode("utf-8")
+    user_states[cid] = "waiting_vacancy"
+    send_menu(cid, t(cid,"step2"), back_resume_kb(cid))
+
+# ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
+@bot.message_handler(content_types=["text"])
+def text_handler(message):
+    cid = message.chat.id
+    text = message.text
+    state = user_states.get(cid)
+
+    if text.startswith("/"):
+        return
+
+    if state == "writing_support":
+        save_ticket(cid, text)
+        user_states[cid] = None
+        try: bot.delete_message(cid, message.message_id)
+        except: pass
+        send_menu(cid, t(cid,"support_sent",email=SUPPORT_EMAIL) + "\n\n" + t(cid,"main_menu"), main_kb(cid))
+        try:
+            bot.send_message(ADMIN_ID, f"🎫 От {cid}:\n\n{text}")
+        except: pass
+        return
+
+    if state and state.startswith("replying_") and cid == ADMIN_ID:
+        target_id = int(state.split("_")[1])
+        try:
+            bot.send_message(target_id, f"📨 Ответ от поддержки:\n\n{text}")
+            delete_ticket(target_id)
+        except Exception as e:
+            bot.send_message(cid, f"❌ Ошибка: {e}")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_set_price" and cid == ADMIN_ID:
+        try:
+            set_setting("price", int(text))
+            user_states[cid] = None
+            _show_admin(cid)
+        except:
+            bot.send_message(cid, "❌ Введите число.")
+        return
+
+    if state == "admin_set_days" and cid == ADMIN_ID:
+        try:
+            set_setting("subscription_days", int(text))
+            user_states[cid] = None
+            _show_admin(cid)
+        except:
+            bot.send_message(cid, "❌ Введите число.")
+        return
+
+    if state == "admin_set_ad" and cid == ADMIN_ID:
+        set_setting("ad_text", text)
+        set_setting("ad_active", "1")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_give_sub" and cid == ADMIN_ID:
+        try:
+            target_id = int(text.strip())
+            # Проверяем, существует ли пользователь
+            user = get_user(target_id)
+            if not user:
+                # Если пользователь не найден, создаём запись
+                upsert_user(target_id)
+                logger.info(f"Создана запись для пользователя {target_id} при выдаче подписки")
+            days = int(get_setting("subscription_days"))
+            sub_until = datetime.now() + timedelta(days=days)
+            sub_start = datetime.now()
+            upsert_user(target_id, sub_until=sub_until, sub_start=sub_start)
+            date_str = sub_until.strftime("%d.%m.%Y")
+            try:
+                bot.send_message(target_id, f"🎉 Подписка выдана до {date_str}!", reply_markup=main_kb(target_id))
+            except Exception as e:
+                logger.error(f"Не удалось отправить сообщение пользователю {target_id}: {e}")
+            bot.send_message(cid, f"✅ Подписка выдана пользователю {target_id} до {date_str}")
+        except ValueError:
+            bot.send_message(cid, "❌ Неверный ID. Введите число.")
+        except Exception as e:
+            bot.send_message(cid, f"❌ Ошибка: {e}")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_broadcast" and cid == ADMIN_ID:
+        users = get_all_users()
+        sent = 0
+        for uid in users:
+            try:
+                bot.send_message(uid, f"📢 {text}")
+                sent += 1
+            except Exception as e:
+                logger.error(f"Не удалось отправить пользователю {uid}: {e}")
+        bot.send_message(cid, f"✅ Отправлено {sent}/{len(users)}")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    user = get_user(cid)
+    if not user or not user["agreed"]:
+        send_menu(cid, t(cid,"need_agree"), agree_kb(cid))
+        return
+
+    if state == "waiting_resume":
+        if len(text) < 50:
+            bot.send_message(cid, t(cid,"too_short_resume"))
+            return
+        user_data.setdefault(cid, {})["resume"] = text
+        user_states[cid] = "waiting_vacancy"
+        send_menu(cid, t(cid,"step2"), back_resume_kb(cid))
+
+    elif state == "waiting_vacancy":
+        if re.match(r'https?://\S+', text.strip()):
+            bot.send_message(cid, t(cid,"no_links"))
+            return
+        if len(text) < 30:
+            bot.send_message(cid, t(cid,"too_short_vacancy"))
+            return
+
+        resume = user_data.get(cid, {}).get("resume", "")
+        user_states[cid] = None
+        delete_prev_menu(cid)
+        proc_msg = bot.send_message(cid, t(cid,"processing"))
+
+        lang = get_lang(cid)
+        try:
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT[lang]},
+                    {"role": "user", "content": f"RESUME:\n{resume}\n\n===\n\nVACANCY:\n{text}"}
+                ],
+                max_tokens=2000,
+                temperature=0.1
+            )
+            result = response.choices[0].message.content
+
+            try: bot.delete_message(cid, proc_msg.message_id)
+            except: pass
+
+            full_text = t(cid,"result_title") + result
+            if len(full_text) > 4000:
+                bot.send_message(cid, t(cid,"result_title"))
+                for i in range(0, len(result), 4000):
+                    bot.send_message(cid, result[i:i+4000])
+            else:
+                bot.send_message(cid, full_text)
+
+            send_menu(cid, t(cid,"result_next"), result_kb(cid))
+
+        except Exception as e:
+            logger.error(f"Groq error: {e}")
+            try: bot.delete_message(cid, proc_msg.message_id)
+            except: pass
+            send_menu(cid, t(cid,"error"), main_kb(cid))
+
+    else:
+        send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+
+# ========== ВЕБХУК ДЛЯ PLATIGA ==========
 @app.route("/webhook/platiga", methods=["POST"])
 def platiga_webhook():
     data = request.get_json(silent=True) or {}
@@ -430,7 +1087,6 @@ def platiga_webhook():
     status = data.get("status")
     payload_str = data.get("payload") or "{}"
 
-    # Надёжный парсинг payload (Platiga иногда присылает по-разному)
     try:
         if isinstance(payload_str, str):
             payload = json.loads(payload_str)
@@ -476,7 +1132,6 @@ def platiga_webhook():
 @app.route("/cron/post", methods=["GET"])
 def cron_post():
     if not MERCHANT_ID or not API_SECRET:
-        # если нет ключей, просто возвращаем OK, чтобы не спамить ошибками
         return "OK", 200
     threading.Thread(target=scheduled_job).start()
     logger.info("Cron endpoint triggered, post generation started")
@@ -497,7 +1152,6 @@ def webhook():
 def index():
     return "Bot is running!", 200
 
-# ========== ЗАПУСК ==========
 if __name__ == "__main__":
     init_db()
     bot.remove_webhook()
