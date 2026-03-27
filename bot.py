@@ -154,6 +154,22 @@ def get_conn():
         logger.error(f"Ошибка подключения к БД: {e}")
         raise
 
+def ensure_column_exists():
+    """Гарантированно добавляет колонку sub_start, если её нет."""
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN sub_start TIMESTAMP DEFAULT NULL")
+        logger.info("✅ Колонка sub_start добавлена")
+    except Exception as e:
+        # Если колонка уже существует, игнорируем ошибку
+        if "already exists" in str(e) or "duplicate column" in str(e):
+            logger.info("Колонка sub_start уже существует")
+        else:
+            logger.error(f"Ошибка при добавлении колонки: {e}")
+    conn.commit()
+    conn.close()
+
 def init_db():
     conn = get_conn()
     c = conn.cursor()
@@ -166,16 +182,9 @@ def init_db():
         sub_start TIMESTAMP DEFAULT NULL,
         created_at TIMESTAMP DEFAULT NOW()
     )""")
-    # Принудительно добавляем колонку sub_start, если её ещё нет
-    c.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                           WHERE table_name='users' AND column_name='sub_start') THEN
-                ALTER TABLE users ADD COLUMN sub_start TIMESTAMP DEFAULT NULL;
-            END IF;
-        END $$;
-    """)
+    # Явно добавляем колонку (если не существует)
+    ensure_column_exists()
+
     c.execute("""CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY, value TEXT
     )""")
