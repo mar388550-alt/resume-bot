@@ -44,7 +44,8 @@ logger.info(f"CHANNEL_ID = {CHANNEL_ID}")
 MERCHANT_ID = os.getenv("MERCHANT_ID")
 API_SECRET = os.getenv("API_SECRET")
 PLATIGA_API_URL = "https://app.platega.io/transaction/process"
-PLATIGA_LK_URL = "https://app.platega.io/"
+# Исправленная ссылка на ЛК Platiga (без поддомена app)
+PLATIGA_LK_URL = "https://platega.io/"
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
@@ -468,25 +469,32 @@ def send_menu(cid, text, kb):
     user_menu_msg[cid] = msg.message_id
     return msg
 
-# ========== ФУНКЦИЯ ДЛЯ СОЗДАНИЯ ПЛАТЕЖА ==========
+# ========== ФУНКЦИЯ ДЛЯ СОЗДАНИЯ ПЛАТЕЖА (С ВЕБХУКОМ) ==========
 def create_platiga_payment(user_id, amount, description, payment_method=11, order_id=None):
     if not order_id:
         order_id = f"{user_id}_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}"
     bot_url = f"https://t.me/{(bot.get_me()).username}"
     payload_data = json.dumps({"user_id": user_id, "order_id": order_id, "type": "subscription"}, ensure_ascii=False)
+    
+    # Явно указываем webhook_url
+    webhook_url = "https://resume-bot-a82h.onrender.com/webhook/platiga"
+    
     payload = {
         "paymentMethod": payment_method,
         "paymentDetails": {"amount": amount, "currency": "RUB"},
         "description": description,
         "return": f"{bot_url}?start=payment_success_{order_id}",
         "failedUrl": f"{bot_url}?start=payment_fail_{order_id}",
-        "payload": payload_data
+        "payload": payload_data,
+        "webhook_url": webhook_url  # Добавлено!
     }
+    
     headers = {
         "X-MerchantId": MERCHANT_ID,
         "X-Secret": API_SECRET,
         "Content-Type": "application/json"
     }
+    
     try:
         logger.info(f"Creating Platiga payment for user {user_id}, amount {amount}, method {payment_method}")
         logger.info(f"Request payload: {payload}")
@@ -869,6 +877,7 @@ def cb(call):
                 kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
                 bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
 
+    # ====== СТАТИСТИКА ======
     elif data == "admin_stats" and cid == ADMIN_ID:
         total_users, active_subs, today_subs, total_subs = get_stats()
         users = get_users_list(offset=0, limit=20)
