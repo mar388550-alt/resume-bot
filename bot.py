@@ -138,16 +138,19 @@ def init_db():
     conn = get_conn()
     c = conn.cursor()
 
-    # Основная таблица пользователей
+    # Основная таблица (без колонок подписки, добавим их отдельно)
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id BIGINT PRIMARY KEY,
         agreed BOOLEAN DEFAULT FALSE,
         lang TEXT DEFAULT 'ru',
-        sub_start TIMESTAMP WITH TIME ZONE,
-        sub_end TIMESTAMP WITH TIME ZONE,
-        is_subscribed BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     )""")
+
+    # Гарантированно добавляем колонки подписки
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_start TIMESTAMP WITH TIME ZONE")
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_end TIMESTAMP WITH TIME ZONE")
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_subscribed BOOLEAN DEFAULT FALSE")
+    logger.info("✅ Колонки подписки проверены/добавлены")
 
     # Остальные таблицы
     c.execute("""CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""")
@@ -157,28 +160,12 @@ def init_db():
 
     # Начальные настройки
     c.execute("""INSERT INTO poster_state (key, value) VALUES ('topic_index', 0) ON CONFLICT (key) DO NOTHING""")
-
     for key, val in [("price","10"), ("subscription_days","7"), ("ad_text",""), ("ad_active","0")]:
         c.execute("INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO NOTHING", (key, val))
 
     conn.commit()
     conn.close()
     logger.info("✅ База данных инициализирована")
-
-def ensure_subscription_columns():
-    """Гарантированное добавление колонок (на случай, если таблица уже существовала в старой структуре)"""
-    conn = get_conn()
-    c = conn.cursor()
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_start TIMESTAMP WITH TIME ZONE")
-        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_end TIMESTAMP WITH TIME ZONE")
-        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_subscribed BOOLEAN DEFAULT FALSE")
-        logger.info("✅ Колонки подписки проверены/добавлены")
-    except Exception as e:
-        logger.error(f"Ошибка при добавлении колонок: {e}")
-    finally:
-        conn.commit()
-        conn.close()
 
 def get_user(uid):
     conn = get_conn()
@@ -1190,7 +1177,7 @@ def index():
 # ========== ЗАПУСК ==========
 if __name__ == "__main__":
     init_db()
-    ensure_subscription_columns()
+    # ensure_subscription_columns уже вызывается внутри init_db, так что отдельно не нужно
 
     bot.remove_webhook()
     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
