@@ -18,7 +18,14 @@ from psycopg2.extras import RealDictCursor
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ========== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==========
+# ========== ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
+required_vars = ["BOT_TOKEN", "GROQ_API_KEY", "ADMIN_ID", "DATABASE_URL", "MERCHANT_ID", "API_SECRET"]
+for var in required_vars:
+    if not os.getenv(var):
+        logger.error(f"❌ Переменная окружения {var} не задана!")
+    else:
+        logger.info(f"✅ {var} задана")
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -31,12 +38,12 @@ if raw_channel and ("postgresql://" in raw_channel or "@dpg-" in raw_channel):
     CHANNEL_ID = "@rezumeizi"
 else:
     CHANNEL_ID = raw_channel if raw_channel else "@rezumeizi"
+logger.info(f"CHANNEL_ID = {CHANNEL_ID}")
 
 # Платежи Platiga
 MERCHANT_ID = os.getenv("MERCHANT_ID")
 API_SECRET = os.getenv("API_SECRET")
 PLATIGA_API_URL = "https://app.platega.io/transaction/process"
-# Ссылка на личный кабинет Platiga (может не открываться в РФ, но это уже не наша проблема)
 PLATIGA_LK_URL = "https://app.platega.io/"
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
@@ -141,7 +148,11 @@ SYSTEM_PROMPT = {
 
 # ========== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ДАННЫХ ==========
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    try:
+        return psycopg2.connect(DATABASE_URL, sslmode="require")
+    except Exception as e:
+        logger.error(f"Ошибка подключения к БД: {e}")
+        raise
 
 def init_db():
     conn = get_conn()
@@ -186,6 +197,7 @@ def init_db():
         c.execute("INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO NOTHING", (key,val))
     conn.commit()
     conn.close()
+    logger.info("База данных инициализирована")
 
 def get_user(uid):
     conn = get_conn()
@@ -477,6 +489,7 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
     }
     try:
         logger.info(f"Creating Platiga payment for user {user_id}, amount {amount}, method {payment_method}")
+        logger.info(f"Request payload: {payload}")
         response = requests.post(PLATIGA_API_URL, json=payload, headers=headers, timeout=15)
         logger.info(f"Platiga response status: {response.status_code}")
         logger.info(f"Platiga response body: {response.text}")
@@ -558,9 +571,7 @@ def admin_kb():
     kb.add(telebot.types.InlineKeyboardButton("➕ Выдать подписку", callback_data="admin_give_sub"))
     kb.add(telebot.types.InlineKeyboardButton("📢 Рассылка всем", callback_data="admin_broadcast"))
     kb.add(telebot.types.InlineKeyboardButton("🎫 Обращения", callback_data="admin_tickets"))
-    # Кнопка статистики (одна)
     kb.add(telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"))
-    # Ссылка на ЛК Platiga (используем URL)
     kb.add(telebot.types.InlineKeyboardButton("🔗 ЛК Platiga", url=PLATIGA_LK_URL))
     kb.add(telebot.types.InlineKeyboardButton("🏠 Выйти из админки", callback_data="admin_exit"))
     return kb
@@ -858,7 +869,6 @@ def cb(call):
                 kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
                 bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
 
-    # ====== НОВЫЙ ОБРАБОТЧИК СТАТИСТИКИ ======
     elif data == "admin_stats" and cid == ADMIN_ID:
         total_users, active_subs, today_subs, total_subs = get_stats()
         users = get_users_list(offset=0, limit=20)
@@ -975,6 +985,12 @@ def text_handler(message):
     if state == "admin_give_sub" and cid == ADMIN_ID:
         try:
             target_id = int(text.strip())
+            # Проверяем, существует ли пользователь
+            user = get_user(target_id)
+            if not user:
+                # Если пользователь не найден, создаём запись
+                upsert_user(target_id)
+                logger.info(f"Создана запись для пользователя {target_id} при выдаче подписки")
             days = int(get_setting("subscription_days"))
             sub_until = datetime.now() + timedelta(days=days)
             sub_start = datetime.now()
@@ -982,9 +998,13 @@ def text_handler(message):
             date_str = sub_until.strftime("%d.%m.%Y")
             try:
                 bot.send_message(target_id, f"🎉 Подписка выдана до {date_str}!", reply_markup=main_kb(target_id))
-            except: pass
-        except:
-            bot.send_message(cid, "❌ Неверный ID.")
+            except Exception as e:
+                logger.error(f"Не удалось отправить сообщение пользователю {target_id}: {e}")
+            bot.send_message(cid, f"✅ Подписка выдана пользователю {target_id} до {date_str}")
+        except ValueError:
+            bot.send_message(cid, "❌ Неверный ID. Введите число.")
+        except Exception as e:
+            bot.send_message(cid, f"❌ Ошибка: {e}")
         user_states[cid] = None
         _show_admin(cid)
         return
@@ -996,7 +1016,8 @@ def text_handler(message):
             try:
                 bot.send_message(uid, f"📢 {text}")
                 sent += 1
-            except: pass
+            except Exception as e:
+                logger.error(f"Не удалось отправить пользователю {uid}: {e}")
         bot.send_message(cid, f"✅ Отправлено {sent}/{len(users)}")
         user_states[cid] = None
         _show_admin(cid)
@@ -1089,6 +1110,10 @@ def platiga_webhook():
         days = int(get_setting("subscription_days"))
         sub_until = datetime.now() + timedelta(days=days)
         sub_start = datetime.now()
+        # Проверяем, существует ли пользователь
+        user = get_user(int(user_id))
+        if not user:
+            upsert_user(int(user_id))
         upsert_user(int(user_id), sub_until=sub_until, sub_start=sub_start)
         try:
             bot.send_message(user_id, f"✅ Оплата прошла успешно! Подписка активна до {sub_until.strftime('%d.%m.%Y')}.", reply_markup=main_kb(user_id))
