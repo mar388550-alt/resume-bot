@@ -135,6 +135,37 @@ SYSTEM_PROMPT = {
 def get_conn():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
+def force_migrate():
+    """
+    Принудительная миграция — запускается ПЕРВОЙ при старте.
+    Добавляет недостающие колонки если таблица users уже существует без них.
+    """
+    conn = get_conn()
+    c = conn.cursor()
+    migrations = [
+        ("sub_start",     "ALTER TABLE users ADD COLUMN sub_start TIMESTAMP WITH TIME ZONE"),
+        ("sub_end",       "ALTER TABLE users ADD COLUMN sub_end TIMESTAMP WITH TIME ZONE"),
+        ("is_subscribed", "ALTER TABLE users ADD COLUMN is_subscribed BOOLEAN DEFAULT FALSE"),
+    ]
+    for col, sql in migrations:
+        try:
+            c.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='users' AND column_name=%s",
+                (col,)
+            )
+            if not c.fetchone():
+                c.execute(sql)
+                logger.info(f"✅ Колонка '{col}' добавлена в таблицу users")
+            else:
+                logger.info(f"ℹ️ Колонка '{col}' уже существует")
+        except Exception as e:
+            logger.error(f"❌ Ошибка миграции колонки '{col}': {e}")
+            conn.rollback()
+    conn.commit()
+    conn.close()
+    logger.info("✅ force_migrate завершена")
+
 def init_db():
     conn = get_conn()
     c = conn.cursor()
@@ -1236,7 +1267,8 @@ def index():
 
 # ========== ЗАПУСК ==========
 if __name__ == "__main__":
-    init_db()
+    force_migrate()   # ПЕРВЫМ — добавляет колонки в существующую БД
+    init_db()         # ВТОРЫМ — создаёт таблицы и настройки
 
     bot.remove_webhook()
     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
