@@ -3,6 +3,7 @@ import re
 import logging
 import uuid
 import json
+import time
 import threading
 import requests
 from datetime import datetime, timedelta, timezone
@@ -138,7 +139,7 @@ def init_db():
     conn = get_conn()
     c = conn.cursor()
 
-    # Основная таблица (без колонок подписки, добавим их отдельно)
+    # Основная таблица
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id BIGINT PRIMARY KEY,
         agreed BOOLEAN DEFAULT FALSE,
@@ -146,21 +147,57 @@ def init_db():
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     )""")
 
-    # Гарантированно добавляем колонки подписки
-    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_start TIMESTAMP WITH TIME ZONE")
-    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_end TIMESTAMP WITH TIME ZONE")
-    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_subscribed BOOLEAN DEFAULT FALSE")
+    # ФИКС: гарантированно добавляем колонки подписки через DO блок
+    c.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='users' AND column_name='sub_start'
+            ) THEN
+                ALTER TABLE users ADD COLUMN sub_start TIMESTAMP WITH TIME ZONE;
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='users' AND column_name='sub_end'
+            ) THEN
+                ALTER TABLE users ADD COLUMN sub_end TIMESTAMP WITH TIME ZONE;
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='users' AND column_name='is_subscribed'
+            ) THEN
+                ALTER TABLE users ADD COLUMN is_subscribed BOOLEAN DEFAULT FALSE;
+            END IF;
+        END $$;
+    """)
     logger.info("✅ Колонки подписки проверены/добавлены")
 
     # Остальные таблицы
     c.execute("""CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS tickets (user_id BIGINT PRIMARY KEY, message TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW())""")
-    c.execute("""CREATE TABLE IF NOT EXISTS payments (id SERIAL PRIMARY KEY, user_id BIGINT, order_id TEXT, amount INTEGER, status TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW())""")
-    c.execute("""CREATE TABLE IF NOT EXISTS poster_state (key VARCHAR(50) PRIMARY KEY, value INTEGER)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS tickets (
+        user_id BIGINT PRIMARY KEY,
+        message TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS payments (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        order_id TEXT,
+        amount INTEGER,
+        status TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS poster_state (
+        key VARCHAR(50) PRIMARY KEY,
+        value INTEGER
+    )""")
 
     # Начальные настройки
     c.execute("""INSERT INTO poster_state (key, value) VALUES ('topic_index', 0) ON CONFLICT (key) DO NOTHING""")
-    for key, val in [("price","10"), ("subscription_days","7"), ("ad_text",""), ("ad_active","0")]:
+    for key, val in [("price", "10"), ("subscription_days", "7"), ("ad_text", ""), ("ad_active", "0")]:
         c.execute("INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO NOTHING", (key, val))
 
     conn.commit()
@@ -279,9 +316,12 @@ def has_access(uid):
     if get_setting("price") == "0":
         return True
     user = get_user(uid)
-    if not user or not user.get("sub_end"):
+    if not user:
         return False
-    return user["sub_end"] > datetime.now(timezone.utc)
+    sub_end = user.get("sub_end")
+    if not sub_end:
+        return False
+    return sub_end > datetime.now(timezone.utc)
 
 def sub_status_text(uid):
     price = get_setting("price")
@@ -290,9 +330,11 @@ def sub_status_text(uid):
         return t(uid, "sub_free")
 
     user = get_user(uid)
-    if user and user.get("sub_end") and user["sub_end"] > datetime.now(timezone.utc):
-        date_str = user["sub_end"].strftime("%d.%m.%Y")
-        return t(uid, "sub_active", date=date_str)
+    if user:
+        sub_end = user.get("sub_end")
+        if sub_end and sub_end > datetime.now(timezone.utc):
+            date_str = sub_end.strftime("%d.%m.%Y")
+            return t(uid, "sub_active", date=date_str)
 
     return t(uid, "sub_none", price=price, days=days)
 
@@ -404,47 +446,38 @@ def generate_post(topic):
     return response.choices[0].message.content
 
 def send_post_to_telegram(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHANNEL_ID,
-        "text": text,
-        "parse_mode": "HTML"
-    }
-    response = requests.post(url, json=data, timeout=10)
-    response.raise_for_status()
-    return response.json()
+    # ФИКС: используем bot объект напрямую, без внешних requests
+    bot.send_message(CHANNEL_ID, text)
+    return True
 
 def post_with_retry(topic, retries=3):
     for attempt in range(1, retries + 1):
         try:
-            logger.info(f"Generating post for topic: {topic}")
+            logger.info(f"Генерация поста для темы: {topic}")
             post_text = generate_post(topic)
-            logger.info("Post generated, sending to Telegram...")
-            result = send_post_to_telegram(post_text)
-            if result.get("ok"):
-                logger.info("✅ Post sent successfully")
-                return True
-            else:
-                logger.error(f"Telegram API error: {result}")
+            logger.info("Пост сгенерирован, отправляем в Telegram...")
+            send_post_to_telegram(post_text)
+            logger.info("✅ Пост отправлен успешно")
+            return True
         except Exception as e:
-            logger.error(f"Attempt {attempt} failed: {e}")
+            logger.error(f"Попытка {attempt} не удалась: {e}")
         if attempt < retries:
             wait = 10 * attempt
-            logger.info(f"Retrying in {wait} seconds...")
-            time.sleep(wait)
+            logger.info(f"Повтор через {wait} сек...")
+            time.sleep(wait)  # ФИКС: time импортирован
     return False
 
 def scheduled_job():
     topic_index = load_topic_index()
     topic = TOPICS_RU[topic_index % len(TOPICS_RU)]
-    logger.info(f"Starting scheduled job for topic index {topic_index}: {topic}")
+    logger.info(f"Запуск scheduled_job для темы {topic_index}: {topic}")
 
     success = post_with_retry(topic)
     if success:
         topic_index += 1
         save_topic_index(topic_index)
     else:
-        logger.error("Failed to post after retries, will try again tomorrow with same topic.")
+        logger.error("Не удалось опубликовать пост после всех попыток.")
 
 # ========== ФУНКЦИЯ СОЗДАНИЯ ПЛАТЕЖА ==========
 def create_platiga_payment(user_id, amount, description, payment_method=11, order_id=None):
@@ -453,7 +486,7 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
     bot_url = f"https://t.me/{(bot.get_me()).username}"
     payload_data = json.dumps({"user_id": user_id, "order_id": order_id, "type": "subscription"}, ensure_ascii=False)
 
-    webhook_url = "https://resume-bot-a82h.onrender.com/webhook/platiga"
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook/platiga"
 
     payload = {
         "paymentMethod": payment_method,
@@ -472,20 +505,19 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
     }
 
     try:
-        logger.info(f"Creating Platiga payment for user {user_id}, amount {amount}, method {payment_method}")
-        logger.info(f"Request payload: {payload}")
+        logger.info(f"Создание платежа Platiga для {user_id}, сумма {amount}, метод {payment_method}")
         response = requests.post(PLATIGA_API_URL, json=payload, headers=headers, timeout=15)
-        logger.info(f"Platiga response status: {response.status_code}")
-        logger.info(f"Platiga response body: {response.text}")
+        logger.info(f"Статус ответа Platiga: {response.status_code}")
+        logger.info(f"Тело ответа Platiga: {response.text}")
         response.raise_for_status()
         data = response.json()
         payment_url = data.get("redirect")
         if not payment_url:
-            logger.error(f"Platiga: no 'redirect' field in response: {data}")
+            logger.error(f"Platiga: нет поля 'redirect' в ответе: {data}")
             return None
         return payment_url
     except Exception as e:
-        logger.error(f"Platiga payment creation failed: {e}")
+        logger.error(f"Ошибка создания платежа Platiga: {e}")
         return None
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -532,53 +564,53 @@ def lang_kb():
 
 def agree_kb(uid):
     kb = telebot.types.InlineKeyboardMarkup()
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_agree"), callback_data="agree"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_agree"), callback_data="agree"))
     kb.row(
-        telebot.types.InlineKeyboardButton(t(uid,"btn_policy"), url=PRIVACY_URL),
-        telebot.types.InlineKeyboardButton(t(uid,"btn_terms"), url=TERMS_URL)
+        telebot.types.InlineKeyboardButton(t(uid, "btn_policy"), url=PRIVACY_URL),
+        telebot.types.InlineKeyboardButton(t(uid, "btn_terms"), url=TERMS_URL)
     )
     return kb
 
 def main_kb(uid):
     kb = telebot.types.InlineKeyboardMarkup()
     if has_access(uid):
-        kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_optimize"), callback_data="start_flow"))
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_my_sub"), callback_data="my_sub"))
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_info"), callback_data="info"))
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_support"), callback_data="support"))
+        kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_optimize"), callback_data="start_flow"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_my_sub"), callback_data="my_sub"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_info"), callback_data="info"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_support"), callback_data="support"))
     return kb
 
 def info_kb(uid):
     kb = telebot.types.InlineKeyboardMarkup()
     kb.row(
-        telebot.types.InlineKeyboardButton(t(uid,"btn_policy"), url=PRIVACY_URL),
-        telebot.types.InlineKeyboardButton(t(uid,"btn_terms"), url=TERMS_URL)
+        telebot.types.InlineKeyboardButton(t(uid, "btn_policy"), url=PRIVACY_URL),
+        telebot.types.InlineKeyboardButton(t(uid, "btn_terms"), url=TERMS_URL)
     )
     kb.add(telebot.types.InlineKeyboardButton("📢 Наш канал", url="https://t.me/rezumeizi"))
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_back"), callback_data="back_main"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
     return kb
 
 def support_kb(uid):
     kb = telebot.types.InlineKeyboardMarkup()
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_write_support"), callback_data="write_support"))
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_back"), callback_data="back_main"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_write_support"), callback_data="write_support"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
     return kb
 
 def back_main_kb(uid):
     kb = telebot.types.InlineKeyboardMarkup()
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_back_menu"), callback_data="back_main"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back_menu"), callback_data="back_main"))
     return kb
 
 def back_resume_kb(uid):
     kb = telebot.types.InlineKeyboardMarkup()
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_back_resume"), callback_data="start_flow"))
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_home"), callback_data="back_main"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back_resume"), callback_data="start_flow"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_home"), callback_data="back_main"))
     return kb
 
 def result_kb(uid):
     kb = telebot.types.InlineKeyboardMarkup()
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_again"), callback_data="start_flow"))
-    kb.add(telebot.types.InlineKeyboardButton(t(uid,"btn_home"), callback_data="back_main"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_again"), callback_data="start_flow"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_home"), callback_data="back_main"))
     return kb
 
 def admin_kb():
@@ -593,6 +625,7 @@ def admin_kb():
     kb.add(telebot.types.InlineKeyboardButton("✏️ Текст рекламы", callback_data="admin_ad_text"))
     kb.add(telebot.types.InlineKeyboardButton("➕ Выдать подписку", callback_data="admin_give_sub"))
     kb.add(telebot.types.InlineKeyboardButton("📢 Рассылка всем", callback_data="admin_broadcast"))
+    kb.add(telebot.types.InlineKeyboardButton("📮 Опубликовать пост", callback_data="admin_post_now"))
     kb.add(telebot.types.InlineKeyboardButton("🎫 Обращения", callback_data="admin_tickets"))
     kb.add(telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"))
     kb.add(telebot.types.InlineKeyboardButton("🔗 ЛК Platiga", url=PLATIGA_LK_URL))
@@ -634,6 +667,8 @@ def _show_admin(cid):
     days = get_setting("subscription_days")
     ad_text = get_setting("ad_text") or "не задан"
     ad_active = get_setting("ad_active") == "1"
+    topic_index = load_topic_index()
+    next_topic = TOPICS_RU[topic_index % len(TOPICS_RU)]
     msg = bot.send_message(cid,
         f"⚙️ Админ панель\n\n"
         f"💰 Цена: {price}₽\n"
@@ -641,7 +676,8 @@ def _show_admin(cid):
         f"📢 Реклама: {'✅ Вкл' if ad_active else '❌ Выкл'}\n"
         f"📝 Текст рекламы: {ad_text}\n\n"
         f"🎫 Обращений: {count_tickets()}\n"
-        f"👥 Пользователей: {count_users()}",
+        f"👥 Пользователей: {count_users()}\n\n"
+        f"📌 Следующий пост ({topic_index + 1}/{len(TOPICS_RU)}):\n{next_topic}",
         reply_markup=admin_kb()
     )
     user_menu_msg[cid] = msg.message_id
@@ -661,43 +697,43 @@ def cb(call):
         if user and user["agreed"]:
             try:
                 bot.edit_message_text(
-                    t(cid,"main_menu") + get_ad_footer(),
+                    t(cid, "main_menu") + get_ad_footer(),
                     cid, call.message.message_id, reply_markup=main_kb(cid)
                 )
             except:
-                send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+                send_menu(cid, t(cid, "main_menu"), main_kb(cid))
         else:
             try:
                 bot.edit_message_text(
-                    t(cid,"welcome") + get_ad_footer(),
+                    t(cid, "welcome") + get_ad_footer(),
                     cid, call.message.message_id, reply_markup=agree_kb(cid)
                 )
             except:
-                send_menu(cid, t(cid,"welcome"), agree_kb(cid))
+                send_menu(cid, t(cid, "welcome"), agree_kb(cid))
 
     # ── AGREE ──
     elif data == "agree":
         upsert_user(cid, agreed=True)
         try:
             bot.edit_message_text(
-                t(cid,"main_menu") + get_ad_footer(),
+                t(cid, "main_menu") + get_ad_footer(),
                 cid, call.message.message_id, reply_markup=main_kb(cid)
             )
             user_menu_msg[cid] = call.message.message_id
         except:
-            send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+            send_menu(cid, t(cid, "main_menu"), main_kb(cid))
 
     # ── MAIN MENU ──
     elif data == "back_main":
         user_states[cid] = None
         try:
             bot.edit_message_text(
-                t(cid,"main_menu") + get_ad_footer(),
+                t(cid, "main_menu") + get_ad_footer(),
                 cid, call.message.message_id, reply_markup=main_kb(cid)
             )
             user_menu_msg[cid] = call.message.message_id
         except:
-            send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+            send_menu(cid, t(cid, "main_menu"), main_kb(cid))
 
     # ── МОЯ ПОДПИСКА ──
     elif data == "my_sub":
@@ -705,7 +741,7 @@ def cb(call):
         kb = telebot.types.InlineKeyboardMarkup()
         if not has_access(cid) and get_setting("price") != "0":
             kb.add(telebot.types.InlineKeyboardButton("💳 Оплатить подписку", callback_data="pay_subscription"))
-        kb.add(telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main"))
+        kb.add(telebot.types.InlineKeyboardButton(t(cid, "btn_back"), callback_data="back_main"))
         try:
             bot.edit_message_text(
                 status + get_ad_footer(),
@@ -719,15 +755,14 @@ def cb(call):
     elif data == "pay_subscription":
         user = get_user(cid)
         if not user or not user["agreed"]:
-            bot.answer_callback_query(call.id, t(cid,"need_agree"))
+            bot.answer_callback_query(call.id, t(cid, "need_agree"))
             return
         if has_access(cid):
             bot.answer_callback_query(call.id, "У вас уже есть активная подписка!")
             return
         if not MERCHANT_ID or not API_SECRET:
-            bot.answer_callback_query(call.id, "Платёжная система временно недоступна. Попробуйте позже.")
+            bot.answer_callback_query(call.id, "Платёжная система временно недоступна.")
             return
-
         try:
             bot.edit_message_text(
                 "Выберите способ оплаты:",
@@ -751,7 +786,7 @@ def cb(call):
                     f"💳 Для оплаты перейдите по ссылке:\n{payment_url}\n\nПосле оплаты подписка активируется автоматически.",
                     cid, call.message.message_id,
                     reply_markup=telebot.types.InlineKeyboardMarkup().add(
-                        telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main")
+                        telebot.types.InlineKeyboardButton(t(cid, "btn_back"), callback_data="back_main")
                     )
                 )
             except:
@@ -766,7 +801,8 @@ def cb(call):
                 t(cid, "info_text") + get_ad_footer(),
                 cid, call.message.message_id, reply_markup=info_kb(cid)
             )
-        except: pass
+        except:
+            pass
 
     # ── ПОДДЕРЖКА ──
     elif data == "support":
@@ -775,7 +811,8 @@ def cb(call):
                 t(cid, "support_text", email=SUPPORT_EMAIL) + get_ad_footer(),
                 cid, call.message.message_id, reply_markup=support_kb(cid)
             )
-        except: pass
+        except:
+            pass
 
     elif data == "write_support":
         user_states[cid] = "writing_support"
@@ -784,48 +821,50 @@ def cb(call):
                 t(cid, "write_support") + get_ad_footer(),
                 cid, call.message.message_id, reply_markup=back_main_kb(cid)
             )
-        except: pass
+        except:
+            pass
 
     # ── FLOW ──
     elif data == "start_flow":
         user = get_user(cid)
         if not user or not user["agreed"]:
-            bot.answer_callback_query(call.id, t(cid,"need_agree"))
+            bot.answer_callback_query(call.id, t(cid, "need_agree"))
             return
         if not has_access(cid):
             price = get_setting("price")
             days = get_setting("subscription_days")
             try:
                 bot.edit_message_text(
-                    t(cid,"need_sub",price=price,days=days,email=SUPPORT_EMAIL) + get_ad_footer(),
+                    t(cid, "need_sub", price=price, days=days, email=SUPPORT_EMAIL) + get_ad_footer(),
                     cid, call.message.message_id,
                     reply_markup=telebot.types.InlineKeyboardMarkup().add(
-                        telebot.types.InlineKeyboardButton(t(cid,"btn_back"), callback_data="back_main")
+                        telebot.types.InlineKeyboardButton(t(cid, "btn_back"), callback_data="back_main")
                     )
                 )
-            except: pass
+            except:
+                pass
             return
         user_states[cid] = "waiting_resume"
         user_data.setdefault(cid, {})["resume"] = ""
         try:
             bot.edit_message_text(
-                t(cid,"step1") + get_ad_footer(),
+                t(cid, "step1") + get_ad_footer(),
                 cid, call.message.message_id, reply_markup=back_main_kb(cid)
             )
             user_menu_msg[cid] = call.message.message_id
         except:
-            send_menu(cid, t(cid,"step1"), back_main_kb(cid))
+            send_menu(cid, t(cid, "step1"), back_main_kb(cid))
 
     # ── АДМИНКА ──
     elif data == "admin_exit" and cid == ADMIN_ID:
         user_states[cid] = None
         try:
             bot.edit_message_text(
-                t(cid,"main_menu") + get_ad_footer(),
+                t(cid, "main_menu") + get_ad_footer(),
                 cid, call.message.message_id, reply_markup=main_kb(cid)
             )
         except:
-            send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+            send_menu(cid, t(cid, "main_menu"), main_kb(cid))
 
     elif data == "admin_price" and cid == ADMIN_ID:
         user_states[cid] = "admin_set_price"
@@ -834,7 +873,8 @@ def cb(call):
                 f"💰 Текущая цена: {get_setting('price')}₽\n\nВведите новую цену (0 = бесплатно):",
                 cid, call.message.message_id, reply_markup=back_main_kb(cid)
             )
-        except: pass
+        except:
+            pass
 
     elif data == "admin_days" and cid == ADMIN_ID:
         user_states[cid] = "admin_set_days"
@@ -843,7 +883,8 @@ def cb(call):
                 f"📅 Текущее кол-во дней: {get_setting('subscription_days')}\n\nВведите новое количество:",
                 cid, call.message.message_id, reply_markup=back_main_kb(cid)
             )
-        except: pass
+        except:
+            pass
 
     elif data == "admin_ad_toggle" and cid == ADMIN_ID:
         current = get_setting("ad_active") == "1"
@@ -852,17 +893,19 @@ def cb(call):
         bot.answer_callback_query(call.id, f"Реклама {status}")
         try:
             bot.edit_message_reply_markup(cid, call.message.message_id, reply_markup=admin_kb())
-        except: pass
+        except:
+            pass
 
     elif data == "admin_ad_text" and cid == ADMIN_ID:
         user_states[cid] = "admin_set_ad"
         current = get_setting("ad_text") or "не задан"
         try:
             bot.edit_message_text(
-                f"✏️ Текущий текст рекламы:\n{current}\n\nВведите новый текст\n(будет видна внизу КАЖДОГО экрана):",
+                f"✏️ Текущий текст рекламы:\n{current}\n\nВведите новый текст:",
                 cid, call.message.message_id, reply_markup=back_main_kb(cid)
             )
-        except: pass
+        except:
+            pass
 
     elif data == "admin_give_sub" and cid == ADMIN_ID:
         user_states[cid] = "admin_give_sub"
@@ -871,7 +914,8 @@ def cb(call):
                 f"➕ Введите Telegram ID пользователя\n(подписка на {get_setting('subscription_days')} дней):",
                 cid, call.message.message_id, reply_markup=back_main_kb(cid)
             )
-        except: pass
+        except:
+            pass
 
     elif data == "admin_broadcast" and cid == ADMIN_ID:
         user_states[cid] = "admin_broadcast"
@@ -880,7 +924,13 @@ def cb(call):
                 "📢 Введите текст рассылки:",
                 cid, call.message.message_id, reply_markup=back_main_kb(cid)
             )
-        except: pass
+        except:
+            pass
+
+    # ФИКС: публикация поста прямо из админки
+    elif data == "admin_post_now" and cid == ADMIN_ID:
+        bot.answer_callback_query(call.id, "⏳ Публикую пост...")
+        threading.Thread(target=_admin_post_now, args=(cid,)).start()
 
     elif data == "admin_tickets" and cid == ADMIN_ID:
         tickets = get_tickets()
@@ -892,33 +942,33 @@ def cb(call):
                 kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
                 bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
 
-    # ====== СТАТИСТИКА ======
     elif data == "admin_stats" and cid == ADMIN_ID:
         total_users, active_subs, today_subs, total_subs = get_stats()
         users = get_users_list(offset=0, limit=20)
         stats_text = (
-            f"📊 **Статистика**\n\n"
-            f"👥 Всего пользователей: **{total_users}**\n"
-            f"✅ Активных подписок: **{active_subs}**\n"
-            f"📅 Подписок за сегодня: **{today_subs}**\n"
-            f"📈 Всего подписок: **{total_subs}**\n\n"
-            f"👥 **Список пользователей (первые 20):**\n"
+            f"📊 Статистика\n\n"
+            f"👥 Всего пользователей: {total_users}\n"
+            f"✅ Активных подписок: {active_subs}\n"
+            f"📅 Подписок за сегодня: {today_subs}\n"
+            f"📈 Всего подписок (за всё время): {total_subs}\n\n"
+            f"Список пользователей (первые 20):\n"
         )
         if users:
             for uid, sub_end in users:
                 if sub_end:
                     date_str = sub_end.strftime("%d.%m.%Y")
-                    stats_text += f"`{uid}` — до {date_str}\n"
+                    stats_text += f"{uid} — до {date_str}\n"
                 else:
-                    stats_text += f"`{uid}` — без подписки\n"
+                    stats_text += f"{uid} — без подписки\n"
         else:
             stats_text += "Нет пользователей.\n"
         kb = telebot.types.InlineKeyboardMarkup()
         kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_admin"))
         try:
-            bot.edit_message_text(stats_text, cid, call.message.message_id, reply_markup=kb, parse_mode="Markdown")
+            bot.edit_message_text(stats_text, cid, call.message.message_id, reply_markup=kb)
         except Exception as e:
-            logger.error(f"Error editing message: {e}")
+            logger.error(f"Ошибка редактирования сообщения: {e}")
+            bot.send_message(cid, stats_text, reply_markup=kb)
 
     elif data == "back_admin" and cid == ADMIN_ID:
         _show_admin(cid)
@@ -933,6 +983,19 @@ def cb(call):
     except:
         pass
 
+def _admin_post_now(admin_cid):
+    try:
+        topic_index = load_topic_index()
+        topic = TOPICS_RU[topic_index % len(TOPICS_RU)]
+        success = post_with_retry(topic, retries=2)
+        if success:
+            save_topic_index(topic_index + 1)
+            bot.send_message(admin_cid, f"✅ Пост опубликован!\nТема: {topic}")
+        else:
+            bot.send_message(admin_cid, "❌ Не удалось опубликовать пост. Проверьте CHANNEL_ID.")
+    except Exception as e:
+        logger.error(f"Ошибка _admin_post_now: {e}")
+        bot.send_message(admin_cid, f"❌ Ошибка: {e}")
 
 # ========== ОБРАБОТЧИК ДОКУМЕНТОВ ==========
 @bot.message_handler(content_types=["document"])
@@ -942,13 +1005,13 @@ def doc_handler(message):
         return
     doc = message.document
     if not doc.file_name.endswith(".txt"):
-        bot.send_message(cid, t(cid,"only_txt"))
+        bot.send_message(cid, t(cid, "only_txt"))
         return
     file_info = bot.get_file(doc.file_id)
     downloaded = bot.download_file(file_info.file_path)
     user_data.setdefault(cid, {})["resume"] = downloaded.decode("utf-8")
     user_states[cid] = "waiting_vacancy"
-    send_menu(cid, t(cid,"step2"), back_resume_kb(cid))
+    send_menu(cid, t(cid, "step2"), back_resume_kb(cid))
 
 # ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
 @bot.message_handler(content_types=["text"])
@@ -967,9 +1030,9 @@ def text_handler(message):
             bot.delete_message(cid, message.message_id)
         except:
             pass
-        send_menu(cid, t(cid,"support_sent",email=SUPPORT_EMAIL) + "\n\n" + t(cid,"main_menu"), main_kb(cid))
+        send_menu(cid, t(cid, "support_sent", email=SUPPORT_EMAIL) + "\n\n" + t(cid, "main_menu"), main_kb(cid))
         try:
-            bot.send_message(ADMIN_ID, f"🎫 От {cid}:\n\n{text}")
+            bot.send_message(ADMIN_ID, f"🎫 Новое обращение от {cid}:\n\n{text}")
         except:
             pass
         return
@@ -979,6 +1042,7 @@ def text_handler(message):
         try:
             bot.send_message(target_id, f"📨 Ответ от поддержки:\n\n{text}")
             delete_ticket(target_id)
+            bot.send_message(cid, f"✅ Ответ отправлен пользователю {target_id}")
         except Exception as e:
             bot.send_message(cid, f"❌ Ошибка: {e}")
         user_states[cid] = None
@@ -1013,10 +1077,8 @@ def text_handler(message):
     if state == "admin_give_sub" and cid == ADMIN_ID:
         try:
             target_id = int(text.strip())
-            # Проверяем, существует ли пользователь
             user = get_user(target_id)
             if not user:
-                # Если пользователь не найден, создаём запись
                 upsert_user(target_id)
                 logger.info(f"Создана запись для пользователя {target_id} при выдаче подписки")
             days = int(get_setting("subscription_days") or 7)
@@ -1051,29 +1113,29 @@ def text_handler(message):
 
     user = get_user(cid)
     if not user or not user["agreed"]:
-        send_menu(cid, t(cid,"need_agree"), agree_kb(cid))
+        send_menu(cid, t(cid, "need_agree"), agree_kb(cid))
         return
 
     if state == "waiting_resume":
         if len(text) < 50:
-            bot.send_message(cid, t(cid,"too_short_resume"))
+            bot.send_message(cid, t(cid, "too_short_resume"))
             return
         user_data.setdefault(cid, {})["resume"] = text
         user_states[cid] = "waiting_vacancy"
-        send_menu(cid, t(cid,"step2"), back_resume_kb(cid))
+        send_menu(cid, t(cid, "step2"), back_resume_kb(cid))
 
     elif state == "waiting_vacancy":
         if re.match(r'https?://\S+', text.strip()):
-            bot.send_message(cid, t(cid,"no_links"))
+            bot.send_message(cid, t(cid, "no_links"))
             return
         if len(text) < 30:
-            bot.send_message(cid, t(cid,"too_short_vacancy"))
+            bot.send_message(cid, t(cid, "too_short_vacancy"))
             return
 
         resume = user_data.get(cid, {}).get("resume", "")
         user_states[cid] = None
         delete_prev_menu(cid)
-        proc_msg = bot.send_message(cid, t(cid,"processing"))
+        proc_msg = bot.send_message(cid, t(cid, "processing"))
 
         lang = get_lang(cid)
         try:
@@ -1093,15 +1155,15 @@ def text_handler(message):
             except:
                 pass
 
-            full_text = t(cid,"result_title") + result
+            full_text = t(cid, "result_title") + result
             if len(full_text) > 4000:
-                bot.send_message(cid, t(cid,"result_title"))
+                bot.send_message(cid, t(cid, "result_title"))
                 for i in range(0, len(result), 4000):
-                    bot.send_message(cid, result[i:i+4000])
+                    bot.send_message(cid, result[i:i + 4000])
             else:
                 bot.send_message(cid, full_text)
 
-            send_menu(cid, t(cid,"result_next"), result_kb(cid))
+            send_menu(cid, t(cid, "result_next"), result_kb(cid))
 
         except Exception as e:
             logger.error(f"Groq error: {e}")
@@ -1109,10 +1171,10 @@ def text_handler(message):
                 bot.delete_message(cid, proc_msg.message_id)
             except:
                 pass
-            send_menu(cid, t(cid,"error"), main_kb(cid))
+            send_menu(cid, t(cid, "error"), main_kb(cid))
 
     else:
-        send_menu(cid, t(cid,"main_menu"), main_kb(cid))
+        send_menu(cid, t(cid, "main_menu"), main_kb(cid))
 
 # ========== ВЕБХУКИ ==========
 @app.route("/" + BOT_TOKEN, methods=["POST"])
@@ -1148,7 +1210,6 @@ def platiga_webhook():
         try:
             user_id = int(user_id)
             sub_end = activate_subscription(user_id)
-
             date_str = sub_end.strftime("%d.%m.%Y %H:%M")
             bot.send_message(
                 user_id,
@@ -1162,10 +1223,9 @@ def platiga_webhook():
 
     return "OK", 200
 
+# ФИКС: убрана проверка MERCHANT_ID — пост не зависит от платёжки
 @app.route("/cron/post", methods=["GET"])
 def cron_post():
-    if not MERCHANT_ID or not API_SECRET:
-        return "OK", 200
     threading.Thread(target=scheduled_job).start()
     logger.info("Cron endpoint triggered, post generation started")
     return "OK", 200
@@ -1177,7 +1237,6 @@ def index():
 # ========== ЗАПУСК ==========
 if __name__ == "__main__":
     init_db()
-    # ensure_subscription_columns уже вызывается внутри init_db, так что отдельно не нужно
 
     bot.remove_webhook()
     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
