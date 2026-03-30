@@ -34,6 +34,7 @@ bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
+
 PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-15-17"
 TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-15-10"
 SUPPORT_EMAIL = "marfor13365@gmail.com"
@@ -1267,6 +1268,13 @@ def text_handler(message):
 
     else:
         send_menu(cid, t(cid, "main_menu"), main_kb(cid))
+
+# ========== МИГРАЦИЯ БД (запускается при импорте модуля, работает с gunicorn) ==========
+try:
+    force_migrate()
+    logger.info("✅ Миграция при старте gunicorn выполнена")
+except Exception as _migrate_err:
+    logging.getLogger(__name__).error(f"❌ Ошибка миграции при старте: {_migrate_err}")
 
 # ========== ВЕБХУКИ ==========
 @app.route("/" + BOT_TOKEN, methods=["POST"])
