@@ -138,33 +138,86 @@ def get_conn():
 def force_migrate():
     """
     Принудительная миграция — запускается ПЕРВОЙ при старте.
-    Добавляет недостающие колонки если таблица users уже существует без них.
+    Создаёт все таблицы и добавляет недостающие колонки.
     """
     conn = get_conn()
     c = conn.cursor()
-    migrations = [
+
+    # ШАГ 1: создать все таблицы
+    table_sqls = [
+        """CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            agreed BOOLEAN DEFAULT FALSE,
+            lang TEXT DEFAULT 'ru',
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )""",
+        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)",
+        """CREATE TABLE IF NOT EXISTS tickets (
+            user_id BIGINT PRIMARY KEY,
+            message TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )""",
+        """CREATE TABLE IF NOT EXISTS payments (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            order_id TEXT,
+            amount INTEGER,
+            status TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )""",
+        """CREATE TABLE IF NOT EXISTS poster_state (
+            key VARCHAR(50) PRIMARY KEY,
+            value INTEGER
+        )""",
+    ]
+    for sql in table_sqls:
+        try:
+            c.execute(sql)
+            conn.commit()
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания таблицы: {e}")
+            conn.rollback()
+
+    # ШАГ 2: добавить колонки подписки в users
+    col_migrations = [
         ("sub_start",     "ALTER TABLE users ADD COLUMN sub_start TIMESTAMP WITH TIME ZONE"),
         ("sub_end",       "ALTER TABLE users ADD COLUMN sub_end TIMESTAMP WITH TIME ZONE"),
         ("is_subscribed", "ALTER TABLE users ADD COLUMN is_subscribed BOOLEAN DEFAULT FALSE"),
     ]
-    for col, sql in migrations:
+    for col, sql in col_migrations:
         try:
             c.execute(
                 "SELECT 1 FROM information_schema.columns "
-                "WHERE table_name='users' AND column_name=%s",
-                (col,)
+                "WHERE table_name='users' AND column_name=%s", (col,)
             )
             if not c.fetchone():
                 c.execute(sql)
-                logger.info(f"✅ Колонка '{col}' добавлена в таблицу users")
+                conn.commit()
+                logger.info(f"✅ Колонка '{col}' добавлена")
             else:
-                logger.info(f"ℹ️ Колонка '{col}' уже существует")
+                logger.info(f"ℹ️ Колонка '{col}' уже есть")
         except Exception as e:
-            logger.error(f"❌ Ошибка миграции колонки '{col}': {e}")
+            logger.error(f"❌ Ошибка добавления колонки '{col}': {e}")
             conn.rollback()
-    conn.commit()
+
+    # ШАГ 3: начальные данные
+    init_data = [
+        ("INSERT INTO poster_state (key, value) VALUES ('topic_index', 0) ON CONFLICT (key) DO NOTHING", None),
+        ("INSERT INTO settings(key,value) VALUES('price','10') ON CONFLICT(key) DO NOTHING", None),
+        ("INSERT INTO settings(key,value) VALUES('subscription_days','7') ON CONFLICT(key) DO NOTHING", None),
+        ("INSERT INTO settings(key,value) VALUES('ad_text','') ON CONFLICT(key) DO NOTHING", None),
+        ("INSERT INTO settings(key,value) VALUES('ad_active','0') ON CONFLICT(key) DO NOTHING", None),
+    ]
+    for sql, params in init_data:
+        try:
+            c.execute(sql, params)
+            conn.commit()
+        except Exception as e:
+            logger.error(f"❌ Ошибка начальных данных: {e}")
+            conn.rollback()
+
     conn.close()
-    logger.info("✅ force_migrate завершена")
+    logger.info("✅ force_migrate завершена успешно")
 
 def init_db():
     conn = get_conn()
@@ -344,15 +397,19 @@ def get_all_users():
 
 # ========== ФУНКЦИИ ПОДПИСКИ ==========
 def has_access(uid):
-    if get_setting("price") == "0":
-        return True
-    user = get_user(uid)
-    if not user:
+    try:
+        if get_setting("price") == "0":
+            return True
+        user = get_user(uid)
+        if not user:
+            return False
+        sub_end = user.get("sub_end")
+        if not sub_end:
+            return False
+        return sub_end > datetime.now(timezone.utc)
+    except Exception as e:
+        logger.error(f"Ошибка has_access: {e}")
         return False
-    sub_end = user.get("sub_end")
-    if not sub_end:
-        return False
-    return sub_end > datetime.now(timezone.utc)
 
 def sub_status_text(uid):
     price = get_setting("price")
@@ -424,12 +481,16 @@ def get_users_list(offset=0, limit=20):
 
 # ========== ФУНКЦИИ ПОСТИНГА ==========
 def load_topic_index():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT value FROM poster_state WHERE key = 'topic_index'")
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else 0
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT value FROM poster_state WHERE key = 'topic_index'")
+        row = c.fetchone()
+        conn.close()
+        return row[0] if row else 0
+    except Exception as e:
+        logger.error(f"Ошибка load_topic_index: {e}")
+        return 0
 
 def save_topic_index(index):
     conn = get_conn()
