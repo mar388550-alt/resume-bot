@@ -34,7 +34,6 @@ bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
-
 PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-15-17"
 TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-15-10"
 SUPPORT_EMAIL = "marfor13365@gmail.com"
@@ -132,76 +131,89 @@ SYSTEM_PROMPT = {
     "en": "You are a resume expert. Briefly adapt the resume for the vacancy: add keywords, optimize for ATS. Keep real data. End with 2-3 lines: match % and key changes."
 }
 
-# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ДАННЫХ ==========
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ДАННЫХ (с повторными попытками) ==========
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    """Устанавливает соединение с БД с параметром sslmode=require и таймаутом"""
+    return psycopg2.connect(DATABASE_URL, sslmode="require", connect_timeout=10)
 
-def force_migrate():
+def get_conn_with_retry(retries=3, delay=2):
+    """Пытается подключиться к БД несколько раз"""
+    for attempt in range(1, retries + 1):
+        try:
+            conn = get_conn()
+            logger.info(f"Подключение к БД успешно (попытка {attempt})")
+            return conn
+        except Exception as e:
+            logger.warning(f"Ошибка подключения к БД (попытка {attempt}/{retries}): {e}")
+            if attempt < retries:
+                time.sleep(delay)
+            else:
+                raise
+
+def migrate_database():
     """
-    Принудительная миграция — запускается ПЕРВОЙ при старте.
-    Создаёт все таблицы и добавляет недостающие колонки.
+    Единая функция миграции: создаёт все таблицы и добавляет недостающие колонки.
+    Использует повторные попытки подключения.
     """
-    conn = get_conn()
+    conn = get_conn_with_retry(retries=5, delay=3)
     c = conn.cursor()
 
-    # ШАГ 1: создать все таблицы
-    table_sqls = [
-        """CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY,
-            agreed BOOLEAN DEFAULT FALSE,
-            lang TEXT DEFAULT 'ru',
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        )""",
-        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)",
-        """CREATE TABLE IF NOT EXISTS tickets (
-            user_id BIGINT PRIMARY KEY,
-            message TEXT,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        )""",
-        """CREATE TABLE IF NOT EXISTS payments (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT,
-            order_id TEXT,
-            amount INTEGER,
-            status TEXT,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        )""",
-        """CREATE TABLE IF NOT EXISTS poster_state (
-            key VARCHAR(50) PRIMARY KEY,
-            value INTEGER
-        )""",
-    ]
-    for sql in table_sqls:
+    # 1. Создание таблиц
+    tables = {
+        "users": """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                agreed BOOLEAN DEFAULT FALSE,
+                lang TEXT DEFAULT 'ru',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """,
+        "settings": "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)",
+        "tickets": """
+            CREATE TABLE IF NOT EXISTS tickets (
+                user_id BIGINT PRIMARY KEY,
+                message TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """,
+        "payments": """
+            CREATE TABLE IF NOT EXISTS payments (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                order_id TEXT,
+                amount INTEGER,
+                status TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """,
+        "poster_state": "CREATE TABLE IF NOT EXISTS poster_state (key VARCHAR(50) PRIMARY KEY, value INTEGER)"
+    }
+    for name, sql in tables.items():
         try:
             c.execute(sql)
-            conn.commit()
+            logger.info(f"Таблица {name} проверена/создана")
         except Exception as e:
-            logger.error(f"❌ Ошибка создания таблицы: {e}")
+            logger.error(f"Ошибка создания таблицы {name}: {e}")
             conn.rollback()
 
-    # ШАГ 2: добавить колонки подписки в users
-    col_migrations = [
-        ("sub_start",     "ALTER TABLE users ADD COLUMN sub_start TIMESTAMP WITH TIME ZONE"),
-        ("sub_end",       "ALTER TABLE users ADD COLUMN sub_end TIMESTAMP WITH TIME ZONE"),
-        ("is_subscribed", "ALTER TABLE users ADD COLUMN is_subscribed BOOLEAN DEFAULT FALSE"),
-    ]
-    for col, sql in col_migrations:
-        try:
-            c.execute(
-                "SELECT 1 FROM information_schema.columns "
-                "WHERE table_name='users' AND column_name=%s", (col,)
-            )
-            if not c.fetchone():
-                c.execute(sql)
-                conn.commit()
-                logger.info(f"✅ Колонка '{col}' добавлена")
-            else:
-                logger.info(f"ℹ️ Колонка '{col}' уже есть")
-        except Exception as e:
-            logger.error(f"❌ Ошибка добавления колонки '{col}': {e}")
-            conn.rollback()
+    # 2. Добавление колонок подписки в users (через DO, чтобы избежать ошибок)
+    c.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='sub_start') THEN
+                ALTER TABLE users ADD COLUMN sub_start TIMESTAMP WITH TIME ZONE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='sub_end') THEN
+                ALTER TABLE users ADD COLUMN sub_end TIMESTAMP WITH TIME ZONE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='is_subscribed') THEN
+                ALTER TABLE users ADD COLUMN is_subscribed BOOLEAN DEFAULT FALSE;
+            END IF;
+        END $$;
+    """)
+    logger.info("Колонки подписки проверены/добавлены")
 
-    # ШАГ 3: начальные данные
+    # 3. Начальные данные
     init_data = [
         ("INSERT INTO poster_state (key, value) VALUES ('topic_index', 0) ON CONFLICT (key) DO NOTHING", None),
         ("INSERT INTO settings(key,value) VALUES('price','10') ON CONFLICT(key) DO NOTHING", None),
@@ -212,85 +224,17 @@ def force_migrate():
     for sql, params in init_data:
         try:
             c.execute(sql, params)
-            conn.commit()
         except Exception as e:
-            logger.error(f"❌ Ошибка начальных данных: {e}")
+            logger.error(f"Ошибка вставки начальных данных: {e}")
             conn.rollback()
-
-    conn.close()
-    logger.info("✅ force_migrate завершена успешно")
-
-def init_db():
-    conn = get_conn()
-    c = conn.cursor()
-
-    # Основная таблица
-    c.execute("""CREATE TABLE IF NOT EXISTS users (
-        user_id BIGINT PRIMARY KEY,
-        agreed BOOLEAN DEFAULT FALSE,
-        lang TEXT DEFAULT 'ru',
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-    )""")
-
-    # ФИКС: гарантированно добавляем колонки подписки через DO блок
-    c.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name='users' AND column_name='sub_start'
-            ) THEN
-                ALTER TABLE users ADD COLUMN sub_start TIMESTAMP WITH TIME ZONE;
-            END IF;
-
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name='users' AND column_name='sub_end'
-            ) THEN
-                ALTER TABLE users ADD COLUMN sub_end TIMESTAMP WITH TIME ZONE;
-            END IF;
-
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name='users' AND column_name='is_subscribed'
-            ) THEN
-                ALTER TABLE users ADD COLUMN is_subscribed BOOLEAN DEFAULT FALSE;
-            END IF;
-        END $$;
-    """)
-    logger.info("✅ Колонки подписки проверены/добавлены")
-
-    # Остальные таблицы
-    c.execute("""CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS tickets (
-        user_id BIGINT PRIMARY KEY,
-        message TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS payments (
-        id SERIAL PRIMARY KEY,
-        user_id BIGINT,
-        order_id TEXT,
-        amount INTEGER,
-        status TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS poster_state (
-        key VARCHAR(50) PRIMARY KEY,
-        value INTEGER
-    )""")
-
-    # Начальные настройки
-    c.execute("""INSERT INTO poster_state (key, value) VALUES ('topic_index', 0) ON CONFLICT (key) DO NOTHING""")
-    for key, val in [("price", "10"), ("subscription_days", "7"), ("ad_text", ""), ("ad_active", "0")]:
-        c.execute("INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO NOTHING", (key, val))
 
     conn.commit()
     conn.close()
-    logger.info("✅ База данных инициализирована")
+    logger.info("✅ Миграция базы данных успешно завершена")
 
+# ========== ОСТАЛЬНЫЕ ФУНКЦИИ РАБОТЫ С БД (без изменений, но используют get_conn_with_retry где нужно) ==========
 def get_user(uid):
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor(cursor_factory=RealDictCursor)
     c.execute("SELECT * FROM users WHERE user_id = %s", (uid,))
     row = c.fetchone()
@@ -298,7 +242,7 @@ def get_user(uid):
     return row
 
 def upsert_user(uid, agreed=None, lang=None, sub_end=None, sub_start=None, is_subscribed=None):
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
 
     c.execute("INSERT INTO users(user_id) VALUES(%s) ON CONFLICT(user_id) DO NOTHING", (uid,))
@@ -330,7 +274,7 @@ def upsert_user(uid, agreed=None, lang=None, sub_end=None, sub_start=None, is_su
     conn.close()
 
 def get_setting(key):
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute("SELECT value FROM settings WHERE key=%s", (key,))
     row = c.fetchone()
@@ -338,7 +282,7 @@ def get_setting(key):
     return row[0] if row else None
 
 def set_setting(key, value):
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute(
         "INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET value=%s",
@@ -348,7 +292,7 @@ def set_setting(key, value):
     conn.close()
 
 def save_ticket(uid, message):
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute(
         "INSERT INTO tickets(user_id,message) VALUES(%s,%s) ON CONFLICT(user_id) DO UPDATE SET message=%s,created_at=NOW()",
@@ -358,7 +302,7 @@ def save_ticket(uid, message):
     conn.close()
 
 def get_tickets():
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute("SELECT user_id, message FROM tickets ORDER BY created_at DESC LIMIT 10")
     rows = c.fetchall()
@@ -366,14 +310,14 @@ def get_tickets():
     return rows
 
 def delete_ticket(uid):
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute("DELETE FROM tickets WHERE user_id=%s", (uid,))
     conn.commit()
     conn.close()
 
 def count_users():
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users")
     n = c.fetchone()[0]
@@ -381,7 +325,7 @@ def count_users():
     return n
 
 def count_tickets():
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM tickets")
     n = c.fetchone()[0]
@@ -389,7 +333,7 @@ def count_tickets():
     return n
 
 def get_all_users():
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute("SELECT user_id FROM users")
     rows = [r[0] for r in c.fetchall()]
@@ -446,7 +390,7 @@ def activate_subscription(user_id: int, days: int = None):
 
 # ========== ФУНКЦИИ СТАТИСТИКИ ==========
 def get_stats():
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     try:
         c.execute("SELECT COUNT(*) FROM users")
@@ -468,7 +412,7 @@ def get_stats():
     return total_users, active_subs, today_subs, total_subs
 
 def get_users_list(offset=0, limit=20):
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute("""
         SELECT user_id, sub_end
@@ -483,7 +427,7 @@ def get_users_list(offset=0, limit=20):
 # ========== ФУНКЦИИ ПОСТИНГА ==========
 def load_topic_index():
     try:
-        conn = get_conn()
+        conn = get_conn_with_retry()
         c = conn.cursor()
         c.execute("SELECT value FROM poster_state WHERE key = 'topic_index'")
         row = c.fetchone()
@@ -494,7 +438,7 @@ def load_topic_index():
         return 0
 
 def save_topic_index(index):
-    conn = get_conn()
+    conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute("UPDATE poster_state SET value = %s WHERE key = 'topic_index'", (index,))
     conn.commit()
@@ -539,7 +483,6 @@ def generate_post(topic):
     return response.choices[0].message.content
 
 def send_post_to_telegram(text):
-    # ФИКС: используем bot объект напрямую, без внешних requests
     bot.send_message(CHANNEL_ID, text)
     return True
 
@@ -557,7 +500,7 @@ def post_with_retry(topic, retries=3):
         if attempt < retries:
             wait = 10 * attempt
             logger.info(f"Повтор через {wait} сек...")
-            time.sleep(wait)  # ФИКС: time импортирован
+            time.sleep(wait)
     return False
 
 def scheduled_job():
@@ -781,7 +724,6 @@ def cb(call):
     cid = call.message.chat.id
     data = call.data
 
-    # ── ЯЗЫК ──
     if data in ("lang_ru", "lang_en"):
         lang = data.split("_")[1]
         upsert_user(cid, lang=lang)
@@ -804,7 +746,6 @@ def cb(call):
             except:
                 send_menu(cid, t(cid, "welcome"), agree_kb(cid))
 
-    # ── AGREE ──
     elif data == "agree":
         upsert_user(cid, agreed=True)
         try:
@@ -816,7 +757,6 @@ def cb(call):
         except:
             send_menu(cid, t(cid, "main_menu"), main_kb(cid))
 
-    # ── MAIN MENU ──
     elif data == "back_main":
         user_states[cid] = None
         try:
@@ -828,7 +768,6 @@ def cb(call):
         except:
             send_menu(cid, t(cid, "main_menu"), main_kb(cid))
 
-    # ── МОЯ ПОДПИСКА ──
     elif data == "my_sub":
         status = sub_status_text(cid)
         kb = telebot.types.InlineKeyboardMarkup()
@@ -844,7 +783,6 @@ def cb(call):
         except:
             pass
 
-    # ── НАЧАЛО ОПЛАТЫ ──
     elif data == "pay_subscription":
         user = get_user(cid)
         if not user or not user["agreed"]:
@@ -865,7 +803,6 @@ def cb(call):
         except:
             pass
 
-    # ── ВЫБРАН МЕТОД ОПЛАТЫ ──
     elif data.startswith("pay_method_"):
         method = int(data.split("_")[2])
         price = int(get_setting("price"))
@@ -887,7 +824,6 @@ def cb(call):
         else:
             bot.answer_callback_query(call.id, "Ошибка создания платежа, попробуйте позже.")
 
-    # ── ИНФОРМАЦИЯ ──
     elif data == "info":
         try:
             bot.edit_message_text(
@@ -897,7 +833,6 @@ def cb(call):
         except:
             pass
 
-    # ── ПОДДЕРЖКА ──
     elif data == "support":
         try:
             bot.edit_message_text(
@@ -917,7 +852,6 @@ def cb(call):
         except:
             pass
 
-    # ── FLOW ──
     elif data == "start_flow":
         user = get_user(cid)
         if not user or not user["agreed"]:
@@ -948,7 +882,6 @@ def cb(call):
         except:
             send_menu(cid, t(cid, "step1"), back_main_kb(cid))
 
-    # ── АДМИНКА ──
     elif data == "admin_exit" and cid == ADMIN_ID:
         user_states[cid] = None
         try:
@@ -1020,7 +953,6 @@ def cb(call):
         except:
             pass
 
-    # ФИКС: публикация поста прямо из админки
     elif data == "admin_post_now" and cid == ADMIN_ID:
         bot.answer_callback_query(call.id, "⏳ Публикую пост...")
         threading.Thread(target=_admin_post_now, args=(cid,)).start()
@@ -1269,13 +1201,6 @@ def text_handler(message):
     else:
         send_menu(cid, t(cid, "main_menu"), main_kb(cid))
 
-# ========== МИГРАЦИЯ БД (запускается при импорте модуля, работает с gunicorn) ==========
-try:
-    force_migrate()
-    logger.info("✅ Миграция при старте gunicorn выполнена")
-except Exception as _migrate_err:
-    logging.getLogger(__name__).error(f"❌ Ошибка миграции при старте: {_migrate_err}")
-
 # ========== ВЕБХУКИ ==========
 @app.route("/" + BOT_TOKEN, methods=["POST"])
 def webhook():
@@ -1323,7 +1248,6 @@ def platiga_webhook():
 
     return "OK", 200
 
-# ФИКС: убрана проверка MERCHANT_ID — пост не зависит от платёжки
 @app.route("/cron/post", methods=["GET"])
 def cron_post():
     threading.Thread(target=scheduled_job).start()
@@ -1336,8 +1260,19 @@ def index():
 
 # ========== ЗАПУСК ==========
 if __name__ == "__main__":
-    force_migrate()   # ПЕРВЫМ — добавляет колонки в существующую БД
-    init_db()         # ВТОРЫМ — создаёт таблицы и настройки
+    # Выполняем миграцию с повторными попытками (до 5 раз)
+    for attempt in range(1, 6):
+        try:
+            migrate_database()
+            logger.info("Миграция базы данных успешно завершена при старте")
+            break
+        except Exception as e:
+            logger.error(f"Ошибка миграции (попытка {attempt}/5): {e}")
+            if attempt < 5:
+                time.sleep(5)
+            else:
+                logger.critical("Не удалось выполнить миграцию, бот не запустится")
+                raise
 
     bot.remove_webhook()
     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
