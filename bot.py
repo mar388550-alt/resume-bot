@@ -131,34 +131,30 @@ SYSTEM_PROMPT = {
     "en": "You are a resume expert. Briefly adapt the resume for the vacancy: add keywords, optimize for ATS. Keep real data. End with 2-3 lines: match % and key changes."
 }
 
-# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ДАННЫХ (с повторными попытками) ==========
+# ========== ФУНКЦИИ РАБОТЫ С БАЗОЙ ДАННЫХ (С ПОВТОРНЫМИ ПОПЫТКАМИ) ==========
 def get_conn():
     """Устанавливает соединение с БД с параметром sslmode=require и таймаутом"""
     return psycopg2.connect(DATABASE_URL, sslmode="require", connect_timeout=10)
 
-def get_conn_with_retry(retries=3, delay=2):
-    """Пытается подключиться к БД несколько раз"""
+def get_conn_with_retry(retries=5, delay=3):
     for attempt in range(1, retries + 1):
         try:
             conn = get_conn()
             logger.info(f"Подключение к БД успешно (попытка {attempt})")
             return conn
         except Exception as e:
-            logger.warning(f"Ошибка подключения к БД (попытка {attempt}/{retries}): {e}")
+            logger.warning(f"Ошибка подключения (попытка {attempt}/{retries}): {e}")
             if attempt < retries:
                 time.sleep(delay)
             else:
                 raise
 
-def migrate_database():
-    """
-    Единая функция миграции: создаёт все таблицы и добавляет недостающие колонки.
-    Использует повторные попытки подключения.
-    """
+def init_database():
+    """Создаёт все таблицы и добавляет колонки, если их нет. Вызывается при старте."""
     conn = get_conn_with_retry(retries=5, delay=3)
     c = conn.cursor()
 
-    # 1. Создание таблиц
+    # 1. Таблицы
     tables = {
         "users": """
             CREATE TABLE IF NOT EXISTS users (
@@ -196,7 +192,7 @@ def migrate_database():
             logger.error(f"Ошибка создания таблицы {name}: {e}")
             conn.rollback()
 
-    # 2. Добавление колонок подписки в users (через DO, чтобы избежать ошибок)
+    # 2. Колонки подписки в users (через DO, чтобы избежать ошибок)
     c.execute("""
         DO $$
         BEGIN
@@ -230,9 +226,9 @@ def migrate_database():
 
     conn.commit()
     conn.close()
-    logger.info("✅ Миграция базы данных успешно завершена")
+    logger.info("✅ Инициализация базы данных успешно завершена")
 
-# ========== ОСТАЛЬНЫЕ ФУНКЦИИ РАБОТЫ С БД (без изменений, но используют get_conn_with_retry где нужно) ==========
+# ========== ОСТАЛЬНЫЕ ФУНКЦИИ РАБОТЫ С БД ==========
 def get_user(uid):
     conn = get_conn_with_retry()
     c = conn.cursor(cursor_factory=RealDictCursor)
@@ -244,9 +240,7 @@ def get_user(uid):
 def upsert_user(uid, agreed=None, lang=None, sub_end=None, sub_start=None, is_subscribed=None):
     conn = get_conn_with_retry()
     c = conn.cursor()
-
     c.execute("INSERT INTO users(user_id) VALUES(%s) ON CONFLICT(user_id) DO NOTHING", (uid,))
-
     updates = []
     params = []
     if agreed is not None:
@@ -264,12 +258,10 @@ def upsert_user(uid, agreed=None, lang=None, sub_end=None, sub_start=None, is_su
     if is_subscribed is not None:
         updates.append("is_subscribed = %s")
         params.append(is_subscribed)
-
     if updates:
         query = f"UPDATE users SET {', '.join(updates)} WHERE user_id = %s"
         params.append(uid)
         c.execute(query, params)
-
     conn.commit()
     conn.close()
 
@@ -361,30 +353,20 @@ def sub_status_text(uid):
     days = get_setting("subscription_days")
     if price == "0":
         return t(uid, "sub_free")
-
     user = get_user(uid)
     if user:
         sub_end = user.get("sub_end")
         if sub_end and sub_end > datetime.now(timezone.utc):
             date_str = sub_end.strftime("%d.%m.%Y")
             return t(uid, "sub_active", date=date_str)
-
     return t(uid, "sub_none", price=price, days=days)
 
 def activate_subscription(user_id: int, days: int = None):
     if days is None:
         days = int(get_setting("subscription_days") or 7)
-
     now = datetime.now(timezone.utc)
     sub_end = now + timedelta(days=days)
-
-    upsert_user(
-        user_id,
-        sub_start=now,
-        sub_end=sub_end,
-        is_subscribed=True
-    )
-
+    upsert_user(user_id, sub_start=now, sub_end=sub_end, is_subscribed=True)
     logger.info(f"✅ Подписка активирована для {user_id} до {sub_end}")
     return sub_end
 
@@ -395,13 +377,10 @@ def get_stats():
     try:
         c.execute("SELECT COUNT(*) FROM users")
         total_users = c.fetchone()[0]
-
         c.execute("SELECT COUNT(*) FROM users WHERE is_subscribed = TRUE AND sub_end > NOW()")
         active_subs = c.fetchone()[0]
-
         c.execute("SELECT COUNT(*) FROM users WHERE sub_start >= DATE_TRUNC('day', NOW())")
         today_subs = c.fetchone()[0]
-
         c.execute("SELECT COUNT(*) FROM users WHERE is_subscribed = TRUE")
         total_subs = c.fetchone()[0]
     except Exception as e:
@@ -473,7 +452,6 @@ def generate_post(topic):
 - В конце призыв подписаться на канал @rezumeizi (если уместно)
 - Используй эмодзи
 - Без хэштегов"""
-
     response = groq_client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
@@ -491,39 +469,29 @@ def post_with_retry(topic, retries=3):
         try:
             logger.info(f"Генерация поста для темы: {topic}")
             post_text = generate_post(topic)
-            logger.info("Пост сгенерирован, отправляем в Telegram...")
             send_post_to_telegram(post_text)
-            logger.info("✅ Пост отправлен успешно")
+            logger.info("✅ Пост отправлен")
             return True
         except Exception as e:
             logger.error(f"Попытка {attempt} не удалась: {e}")
-        if attempt < retries:
-            wait = 10 * attempt
-            logger.info(f"Повтор через {wait} сек...")
-            time.sleep(wait)
+            if attempt < retries:
+                time.sleep(10 * attempt)
     return False
 
 def scheduled_job():
     topic_index = load_topic_index()
     topic = TOPICS_RU[topic_index % len(TOPICS_RU)]
-    logger.info(f"Запуск scheduled_job для темы {topic_index}: {topic}")
-
     success = post_with_retry(topic)
     if success:
-        topic_index += 1
-        save_topic_index(topic_index)
-    else:
-        logger.error("Не удалось опубликовать пост после всех попыток.")
+        save_topic_index(topic_index + 1)
 
-# ========== ФУНКЦИЯ СОЗДАНИЯ ПЛАТЕЖА ==========
+# ========== ПЛАТЕЖИ ==========
 def create_platiga_payment(user_id, amount, description, payment_method=11, order_id=None):
     if not order_id:
         order_id = f"{user_id}_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}"
     bot_url = f"https://t.me/{(bot.get_me()).username}"
     payload_data = json.dumps({"user_id": user_id, "order_id": order_id, "type": "subscription"}, ensure_ascii=False)
-
     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook/platiga"
-
     payload = {
         "paymentMethod": payment_method,
         "paymentDetails": {"amount": amount, "currency": "RUB"},
@@ -533,27 +501,18 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
         "payload": payload_data,
         "webhook_url": webhook_url
     }
-
     headers = {
         "X-MerchantId": MERCHANT_ID,
         "X-Secret": API_SECRET,
         "Content-Type": "application/json"
     }
-
     try:
-        logger.info(f"Создание платежа Platiga для {user_id}, сумма {amount}, метод {payment_method}")
         response = requests.post(PLATIGA_API_URL, json=payload, headers=headers, timeout=15)
-        logger.info(f"Статус ответа Platiga: {response.status_code}")
-        logger.info(f"Тело ответа Platiga: {response.text}")
         response.raise_for_status()
         data = response.json()
-        payment_url = data.get("redirect")
-        if not payment_url:
-            logger.error(f"Platiga: нет поля 'redirect' в ответе: {data}")
-            return None
-        return payment_url
+        return data.get("redirect")
     except Exception as e:
-        logger.error(f"Ошибка создания платежа Platiga: {e}")
+        logger.error(f"Ошибка создания платежа: {e}")
         return None
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -718,7 +677,6 @@ def _show_admin(cid):
     )
     user_menu_msg[cid] = msg.message_id
 
-# ========== ОБРАБОТЧИК INLINE КНОПОК ==========
 @bot.callback_query_handler(func=lambda call: True)
 def cb(call):
     cid = call.message.chat.id
@@ -731,43 +689,28 @@ def cb(call):
         user = get_user(cid)
         if user and user["agreed"]:
             try:
-                bot.edit_message_text(
-                    t(cid, "main_menu") + get_ad_footer(),
-                    cid, call.message.message_id, reply_markup=main_kb(cid)
-                )
+                bot.edit_message_text(t(cid, "main_menu") + get_ad_footer(), cid, call.message.message_id, reply_markup=main_kb(cid))
             except:
                 send_menu(cid, t(cid, "main_menu"), main_kb(cid))
         else:
             try:
-                bot.edit_message_text(
-                    t(cid, "welcome") + get_ad_footer(),
-                    cid, call.message.message_id, reply_markup=agree_kb(cid)
-                )
+                bot.edit_message_text(t(cid, "welcome") + get_ad_footer(), cid, call.message.message_id, reply_markup=agree_kb(cid))
             except:
                 send_menu(cid, t(cid, "welcome"), agree_kb(cid))
-
     elif data == "agree":
         upsert_user(cid, agreed=True)
         try:
-            bot.edit_message_text(
-                t(cid, "main_menu") + get_ad_footer(),
-                cid, call.message.message_id, reply_markup=main_kb(cid)
-            )
+            bot.edit_message_text(t(cid, "main_menu") + get_ad_footer(), cid, call.message.message_id, reply_markup=main_kb(cid))
             user_menu_msg[cid] = call.message.message_id
         except:
             send_menu(cid, t(cid, "main_menu"), main_kb(cid))
-
     elif data == "back_main":
         user_states[cid] = None
         try:
-            bot.edit_message_text(
-                t(cid, "main_menu") + get_ad_footer(),
-                cid, call.message.message_id, reply_markup=main_kb(cid)
-            )
+            bot.edit_message_text(t(cid, "main_menu") + get_ad_footer(), cid, call.message.message_id, reply_markup=main_kb(cid))
             user_menu_msg[cid] = call.message.message_id
         except:
             send_menu(cid, t(cid, "main_menu"), main_kb(cid))
-
     elif data == "my_sub":
         status = sub_status_text(cid)
         kb = telebot.types.InlineKeyboardMarkup()
@@ -775,14 +718,9 @@ def cb(call):
             kb.add(telebot.types.InlineKeyboardButton("💳 Оплатить подписку", callback_data="pay_subscription"))
         kb.add(telebot.types.InlineKeyboardButton(t(cid, "btn_back"), callback_data="back_main"))
         try:
-            bot.edit_message_text(
-                status + get_ad_footer(),
-                cid, call.message.message_id,
-                reply_markup=kb
-            )
+            bot.edit_message_text(status + get_ad_footer(), cid, call.message.message_id, reply_markup=kb)
         except:
             pass
-
     elif data == "pay_subscription":
         user = get_user(cid)
         if not user or not user["agreed"]:
@@ -795,20 +733,14 @@ def cb(call):
             bot.answer_callback_query(call.id, "Платёжная система временно недоступна.")
             return
         try:
-            bot.edit_message_text(
-                "Выберите способ оплаты:",
-                cid, call.message.message_id,
-                reply_markup=payment_methods_kb(cid)
-            )
+            bot.edit_message_text("Выберите способ оплаты:", cid, call.message.message_id, reply_markup=payment_methods_kb(cid))
         except:
             pass
-
     elif data.startswith("pay_method_"):
         method = int(data.split("_")[2])
         price = int(get_setting("price"))
         days = get_setting("subscription_days")
         description = f"Подписка на {days} дней"
-
         payment_url = create_platiga_payment(cid, float(price), description, payment_method=method)
         if payment_url:
             try:
@@ -823,35 +755,22 @@ def cb(call):
                 pass
         else:
             bot.answer_callback_query(call.id, "Ошибка создания платежа, попробуйте позже.")
-
     elif data == "info":
         try:
-            bot.edit_message_text(
-                t(cid, "info_text") + get_ad_footer(),
-                cid, call.message.message_id, reply_markup=info_kb(cid)
-            )
+            bot.edit_message_text(t(cid, "info_text") + get_ad_footer(), cid, call.message.message_id, reply_markup=info_kb(cid))
         except:
             pass
-
     elif data == "support":
         try:
-            bot.edit_message_text(
-                t(cid, "support_text", email=SUPPORT_EMAIL) + get_ad_footer(),
-                cid, call.message.message_id, reply_markup=support_kb(cid)
-            )
+            bot.edit_message_text(t(cid, "support_text", email=SUPPORT_EMAIL) + get_ad_footer(), cid, call.message.message_id, reply_markup=support_kb(cid))
         except:
             pass
-
     elif data == "write_support":
         user_states[cid] = "writing_support"
         try:
-            bot.edit_message_text(
-                t(cid, "write_support") + get_ad_footer(),
-                cid, call.message.message_id, reply_markup=back_main_kb(cid)
-            )
+            bot.edit_message_text(t(cid, "write_support") + get_ad_footer(), cid, call.message.message_id, reply_markup=back_main_kb(cid))
         except:
             pass
-
     elif data == "start_flow":
         user = get_user(cid)
         if not user or not user["agreed"]:
@@ -874,89 +793,58 @@ def cb(call):
         user_states[cid] = "waiting_resume"
         user_data.setdefault(cid, {})["resume"] = ""
         try:
-            bot.edit_message_text(
-                t(cid, "step1") + get_ad_footer(),
-                cid, call.message.message_id, reply_markup=back_main_kb(cid)
-            )
+            bot.edit_message_text(t(cid, "step1") + get_ad_footer(), cid, call.message.message_id, reply_markup=back_main_kb(cid))
             user_menu_msg[cid] = call.message.message_id
         except:
             send_menu(cid, t(cid, "step1"), back_main_kb(cid))
-
     elif data == "admin_exit" and cid == ADMIN_ID:
         user_states[cid] = None
         try:
-            bot.edit_message_text(
-                t(cid, "main_menu") + get_ad_footer(),
-                cid, call.message.message_id, reply_markup=main_kb(cid)
-            )
+            bot.edit_message_text(t(cid, "main_menu") + get_ad_footer(), cid, call.message.message_id, reply_markup=main_kb(cid))
         except:
             send_menu(cid, t(cid, "main_menu"), main_kb(cid))
-
     elif data == "admin_price" and cid == ADMIN_ID:
         user_states[cid] = "admin_set_price"
         try:
-            bot.edit_message_text(
-                f"💰 Текущая цена: {get_setting('price')}₽\n\nВведите новую цену (0 = бесплатно):",
-                cid, call.message.message_id, reply_markup=back_main_kb(cid)
-            )
+            bot.edit_message_text(f"💰 Текущая цена: {get_setting('price')}₽\n\nВведите новую цену (0 = бесплатно):", cid, call.message.message_id, reply_markup=back_main_kb(cid))
         except:
             pass
-
     elif data == "admin_days" and cid == ADMIN_ID:
         user_states[cid] = "admin_set_days"
         try:
-            bot.edit_message_text(
-                f"📅 Текущее кол-во дней: {get_setting('subscription_days')}\n\nВведите новое количество:",
-                cid, call.message.message_id, reply_markup=back_main_kb(cid)
-            )
+            bot.edit_message_text(f"📅 Текущее кол-во дней: {get_setting('subscription_days')}\n\nВведите новое количество:", cid, call.message.message_id, reply_markup=back_main_kb(cid))
         except:
             pass
-
     elif data == "admin_ad_toggle" and cid == ADMIN_ID:
         current = get_setting("ad_active") == "1"
         set_setting("ad_active", "0" if current else "1")
-        status = "выключена ❌" if current else "включена ✅"
-        bot.answer_callback_query(call.id, f"Реклама {status}")
+        bot.answer_callback_query(call.id, f"Реклама {'выключена' if current else 'включена'}")
         try:
             bot.edit_message_reply_markup(cid, call.message.message_id, reply_markup=admin_kb())
         except:
             pass
-
     elif data == "admin_ad_text" and cid == ADMIN_ID:
         user_states[cid] = "admin_set_ad"
         current = get_setting("ad_text") or "не задан"
         try:
-            bot.edit_message_text(
-                f"✏️ Текущий текст рекламы:\n{current}\n\nВведите новый текст:",
-                cid, call.message.message_id, reply_markup=back_main_kb(cid)
-            )
+            bot.edit_message_text(f"✏️ Текущий текст рекламы:\n{current}\n\nВведите новый текст:", cid, call.message.message_id, reply_markup=back_main_kb(cid))
         except:
             pass
-
     elif data == "admin_give_sub" and cid == ADMIN_ID:
         user_states[cid] = "admin_give_sub"
         try:
-            bot.edit_message_text(
-                f"➕ Введите Telegram ID пользователя\n(подписка на {get_setting('subscription_days')} дней):",
-                cid, call.message.message_id, reply_markup=back_main_kb(cid)
-            )
+            bot.edit_message_text(f"➕ Введите Telegram ID пользователя\n(подписка на {get_setting('subscription_days')} дней):", cid, call.message.message_id, reply_markup=back_main_kb(cid))
         except:
             pass
-
     elif data == "admin_broadcast" and cid == ADMIN_ID:
         user_states[cid] = "admin_broadcast"
         try:
-            bot.edit_message_text(
-                "📢 Введите текст рассылки:",
-                cid, call.message.message_id, reply_markup=back_main_kb(cid)
-            )
+            bot.edit_message_text("📢 Введите текст рассылки:", cid, call.message.message_id, reply_markup=back_main_kb(cid))
         except:
             pass
-
     elif data == "admin_post_now" and cid == ADMIN_ID:
         bot.answer_callback_query(call.id, "⏳ Публикую пост...")
         threading.Thread(target=_admin_post_now, args=(cid,)).start()
-
     elif data == "admin_tickets" and cid == ADMIN_ID:
         tickets = get_tickets()
         if not tickets:
@@ -966,7 +854,6 @@ def cb(call):
                 kb = telebot.types.InlineKeyboardMarkup()
                 kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
                 bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
-
     elif data == "admin_stats" and cid == ADMIN_ID:
         total_users, active_subs, today_subs, total_subs = get_stats()
         users = get_users_list(offset=0, limit=20)
@@ -981,8 +868,7 @@ def cb(call):
         if users:
             for uid, sub_end in users:
                 if sub_end:
-                    date_str = sub_end.strftime("%d.%m.%Y")
-                    stats_text += f"{uid} — до {date_str}\n"
+                    stats_text += f"{uid} — до {sub_end.strftime('%d.%m.%Y')}\n"
                 else:
                     stats_text += f"{uid} — без подписки\n"
         else:
@@ -992,17 +878,14 @@ def cb(call):
         try:
             bot.edit_message_text(stats_text, cid, call.message.message_id, reply_markup=kb)
         except Exception as e:
-            logger.error(f"Ошибка редактирования сообщения: {e}")
+            logger.error(f"Ошибка редактирования: {e}")
             bot.send_message(cid, stats_text, reply_markup=kb)
-
     elif data == "back_admin" and cid == ADMIN_ID:
         _show_admin(cid)
-
     elif data.startswith("reply_") and cid == ADMIN_ID:
         target_id = int(data.split("_")[1])
         user_states[cid] = f"replying_{target_id}"
         bot.send_message(cid, f"✉️ Введите ответ пользователю {target_id}:")
-
     try:
         bot.answer_callback_query(call.id)
     except:
@@ -1012,17 +895,15 @@ def _admin_post_now(admin_cid):
     try:
         topic_index = load_topic_index()
         topic = TOPICS_RU[topic_index % len(TOPICS_RU)]
-        success = post_with_retry(topic, retries=2)
-        if success:
+        if post_with_retry(topic, retries=2):
             save_topic_index(topic_index + 1)
             bot.send_message(admin_cid, f"✅ Пост опубликован!\nТема: {topic}")
         else:
-            bot.send_message(admin_cid, "❌ Не удалось опубликовать пост. Проверьте CHANNEL_ID.")
+            bot.send_message(admin_cid, "❌ Не удалось опубликовать пост.")
     except Exception as e:
         logger.error(f"Ошибка _admin_post_now: {e}")
         bot.send_message(admin_cid, f"❌ Ошибка: {e}")
 
-# ========== ОБРАБОТЧИК ДОКУМЕНТОВ ==========
 @bot.message_handler(content_types=["document"])
 def doc_handler(message):
     cid = message.chat.id
@@ -1038,7 +919,6 @@ def doc_handler(message):
     user_states[cid] = "waiting_vacancy"
     send_menu(cid, t(cid, "step2"), back_resume_kb(cid))
 
-# ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
 @bot.message_handler(content_types=["text"])
 def text_handler(message):
     cid = message.chat.id
@@ -1105,14 +985,13 @@ def text_handler(message):
             user = get_user(target_id)
             if not user:
                 upsert_user(target_id)
-                logger.info(f"Создана запись для пользователя {target_id} при выдаче подписки")
             days = int(get_setting("subscription_days") or 7)
             sub_end = activate_subscription(target_id, days)
             date_str = sub_end.strftime("%d.%m.%Y")
             try:
                 bot.send_message(target_id, f"🎉 Подписка выдана до {date_str}!", reply_markup=main_kb(target_id))
             except Exception as e:
-                logger.error(f"Не удалось отправить сообщение пользователю {target_id}: {e}")
+                logger.error(f"Не удалось отправить сообщение {target_id}: {e}")
             bot.send_message(cid, f"✅ Подписка выдана пользователю {target_id} до {date_str}")
         except ValueError:
             bot.send_message(cid, "❌ Неверный ID. Введите число.")
@@ -1130,7 +1009,7 @@ def text_handler(message):
                 bot.send_message(uid, f"📢 {text}")
                 sent += 1
             except Exception as e:
-                logger.error(f"Не удалось отправить пользователю {uid}: {e}")
+                logger.error(f"Не удалось отправить {uid}: {e}")
         bot.send_message(cid, f"✅ Отправлено {sent}/{len(users)}")
         user_states[cid] = None
         _show_admin(cid)
@@ -1148,7 +1027,6 @@ def text_handler(message):
         user_data.setdefault(cid, {})["resume"] = text
         user_states[cid] = "waiting_vacancy"
         send_menu(cid, t(cid, "step2"), back_resume_kb(cid))
-
     elif state == "waiting_vacancy":
         if re.match(r'https?://\S+', text.strip()):
             bot.send_message(cid, t(cid, "no_links"))
@@ -1156,12 +1034,10 @@ def text_handler(message):
         if len(text) < 30:
             bot.send_message(cid, t(cid, "too_short_vacancy"))
             return
-
         resume = user_data.get(cid, {}).get("resume", "")
         user_states[cid] = None
         delete_prev_menu(cid)
         proc_msg = bot.send_message(cid, t(cid, "processing"))
-
         lang = get_lang(cid)
         try:
             response = groq_client.chat.completions.create(
@@ -1174,22 +1050,18 @@ def text_handler(message):
                 temperature=0.1
             )
             result = response.choices[0].message.content
-
             try:
                 bot.delete_message(cid, proc_msg.message_id)
             except:
                 pass
-
             full_text = t(cid, "result_title") + result
             if len(full_text) > 4000:
                 bot.send_message(cid, t(cid, "result_title"))
                 for i in range(0, len(result), 4000):
-                    bot.send_message(cid, result[i:i + 4000])
+                    bot.send_message(cid, result[i:i+4000])
             else:
                 bot.send_message(cid, full_text)
-
             send_menu(cid, t(cid, "result_next"), result_kb(cid))
-
         except Exception as e:
             logger.error(f"Groq error: {e}")
             try:
@@ -1197,7 +1069,6 @@ def text_handler(message):
             except:
                 pass
             send_menu(cid, t(cid, "error"), main_kb(cid))
-
     else:
         send_menu(cid, t(cid, "main_menu"), main_kb(cid))
 
@@ -1215,68 +1086,53 @@ def webhook():
 @app.route("/webhook/platiga", methods=["POST"])
 def platiga_webhook():
     data = request.get_json(silent=True) or {}
-    logger.info(f"📩 Platiga webhook: {json.dumps(data, ensure_ascii=False, indent=2)}")
-
+    logger.info(f"Platiga webhook: {data}")
     status = data.get("status")
     payload_str = data.get("payload") or "{}"
-
     try:
-        if isinstance(payload_str, str):
-            payload = json.loads(payload_str)
-        else:
-            payload = payload_str
+        payload = json.loads(payload_str) if isinstance(payload_str, str) else payload_str
     except Exception as e:
-        logger.error(f"❌ Не удалось распарсить payload: {e}")
+        logger.error(f"Ошибка парсинга payload: {e}")
         payload = {}
-
     user_id = payload.get("user_id")
-
     if status == "CONFIRMED" and user_id:
         try:
             user_id = int(user_id)
             sub_end = activate_subscription(user_id)
             date_str = sub_end.strftime("%d.%m.%Y %H:%M")
-            bot.send_message(
-                user_id,
-                t(user_id, "payment_success", date=date_str),
-                reply_markup=main_kb(user_id)
-            )
+            bot.send_message(user_id, t(user_id, "payment_success", date=date_str), reply_markup=main_kb(user_id))
         except Exception as e:
-            logger.error(f"Ошибка активации подписки через webhook: {e}")
-    else:
-        logger.warning(f"Webhook без активации: status={status}, user_id={user_id}")
-
+            logger.error(f"Ошибка активации подписки: {e}")
     return "OK", 200
 
 @app.route("/cron/post", methods=["GET"])
 def cron_post():
     threading.Thread(target=scheduled_job).start()
-    logger.info("Cron endpoint triggered, post generation started")
     return "OK", 200
 
 @app.route("/")
 def index():
     return "Bot is running!", 200
 
-# ========== ЗАПУСК ==========
+# ========== ГЛОБАЛЬНАЯ ИНИЦИАЛИЗАЦИЯ ДЛЯ GUNICORN ==========
+def startup():
+    logger.info("🔧 Запуск инициализации базы данных и вебхука...")
+    try:
+        init_database()
+        logger.info("✅ База данных инициализирована")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации БД: {e}")
+    try:
+        bot.remove_webhook()
+        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
+        bot.set_webhook(url=webhook_url)
+        logger.info(f"✅ Вебхук установлен: {webhook_url}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка установки вебхука: {e}")
+
+# ВЫЗЫВАЕМ ПРИ ЗАГРУЗКЕ МОДУЛЯ (GUNICORN)
+startup()
+
+# ========== ЛОКАЛЬНЫЙ ЗАПУСК (НЕ ИСПОЛЬЗУЕТСЯ НА RENDER) ==========
 if __name__ == "__main__":
-    # Выполняем миграцию с повторными попытками (до 5 раз)
-    for attempt in range(1, 6):
-        try:
-            migrate_database()
-            logger.info("Миграция базы данных успешно завершена при старте")
-            break
-        except Exception as e:
-            logger.error(f"Ошибка миграции (попытка {attempt}/5): {e}")
-            if attempt < 5:
-                time.sleep(5)
-            else:
-                logger.critical("Не удалось выполнить миграцию, бот не запустится")
-                raise
-
-    bot.remove_webhook()
-    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
-    bot.set_webhook(url=webhook_url)
-
-    logger.info(f"Webhook установлен: {webhook_url}")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
