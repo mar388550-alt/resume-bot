@@ -90,7 +90,6 @@ T = {
         "vpn_inactive": "❌ У вас нет активного VPN.",
         "vpn_subscribe": "💳 Подписаться",
         "vpn_renew": "🔄 Продлить",
-        "vpn_instruction": "📱 *Инструкция по подключению*\n\n{key}\n\nСпасибо за покупку!",
         "vpn_paid_success": "✅ Оплата VPN получена!\n\n{instruction}",
         "vpn_no_keys": "⚠️ К сожалению, все ключи временно закончились. Обратитесь к администратору.",
     },
@@ -140,7 +139,6 @@ T = {
         "vpn_inactive": "❌ You don't have an active VPN.",
         "vpn_subscribe": "💳 Subscribe",
         "vpn_renew": "🔄 Renew",
-        "vpn_instruction": "📱 *Setup Instructions*\n\n{key}\n\nThank you for your purchase!",
         "vpn_paid_success": "✅ VPN payment received!\n\n{instruction}",
         "vpn_no_keys": "⚠️ Sorry, all keys are temporarily sold out. Contact administrator.",
     }
@@ -151,7 +149,7 @@ SYSTEM_PROMPT = {
     "en": "You are a resume expert. Briefly adapt the resume for the vacancy: add keywords, optimize for ATS. Keep real data. End with 2-3 lines: match % and key changes."
 }
 
-# ========== ФУНКЦИИ БАЗЫ ДАННЫХ (С ПОВТОРНЫМИ ПОПЫТКАМИ) ==========
+# ========== ФУНКЦИИ БАЗЫ ДАННЫХ ==========
 def get_conn():
     return psycopg2.connect(DATABASE_URL, sslmode="require", connect_timeout=10)
 
@@ -247,7 +245,7 @@ def init_database():
     """)
     logger.info("Колонки подписки проверены/добавлены")
 
-    # Начальные настройки
+    # Начальные настройки (включая vpn_instruction)
     init_data = [
         ("INSERT INTO poster_state (key, value) VALUES ('topic_index', 0) ON CONFLICT (key) DO NOTHING", None),
         ("INSERT INTO settings(key,value) VALUES('price','10') ON CONFLICT(key) DO NOTHING", None),
@@ -256,6 +254,7 @@ def init_database():
         ("INSERT INTO settings(key,value) VALUES('ad_active','0') ON CONFLICT(key) DO NOTHING", None),
         ("INSERT INTO settings(key,value) VALUES('vpn_price','300') ON CONFLICT(key) DO NOTHING", None),
         ("INSERT INTO settings(key,value) VALUES('vpn_description','Анонимный и быстрый VPN без ограничений трафика и скорости. Подходит для любых устройств.') ON CONFLICT(key) DO NOTHING", None),
+        ("INSERT INTO settings(key,value) VALUES('vpn_instruction','📱 Инструкция по подключению VPN через Happ:\n\n1️⃣ Скачайте приложение:\n• Android (Google Play): https://play.google.com/store/apps/details?id=com.happproxy\n• Android (RuStore): https://apps.rustore.ru/app/com.happproxy\n• iOS: https://apps.apple.com/ru/app/happ-proxy-utility/id6504287215\n\n2️⃣ Скопируйте ключ: {key}\n\n3️⃣ Откройте Happ → кнопка «+» → «Из буфера» → нажмите на сервер.\n\n✅ Готово!') ON CONFLICT(key) DO NOTHING", None),
     ]
     for sql, params in init_data:
         try:
@@ -268,7 +267,7 @@ def init_database():
     conn.close()
     logger.info("✅ Инициализация базы данных успешно завершена")
 
-# ========== ФУНКЦИИ РАБОТЫ С БД (существующие) ==========
+# ========== ОСНОВНЫЕ ФУНКЦИИ РАБОТЫ С БД ==========
 def get_user(uid):
     conn = get_conn_with_retry()
     c = conn.cursor(cursor_factory=RealDictCursor)
@@ -417,6 +416,9 @@ def get_vpn_price():
 def get_vpn_description():
     return get_setting("vpn_description") or "Анонимный и быстрый VPN без ограничений."
 
+def get_vpn_instruction():
+    return get_setting("vpn_instruction") or "Инструкция по VPN не задана."
+
 def get_active_vpn_purchase(user_id):
     conn = get_conn_with_retry()
     c = conn.cursor(cursor_factory=RealDictCursor)
@@ -436,7 +438,6 @@ def has_active_vpn(user_id):
     return purchase is not None
 
 def get_free_vpn_key():
-    """Возвращает первый неиспользованный ключ и помечает его как used."""
     conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute("SELECT id, key_text FROM vpn_keys WHERE used = FALSE ORDER BY id LIMIT 1 FOR UPDATE")
@@ -463,7 +464,6 @@ def activate_vpn(user_id, key_id):
     logger.info(f"✅ VPN активирован для {user_id} до {expires_at}")
 
 def deactivate_old_vpn(user_id):
-    """Деактивирует все старые VPN-подписки пользователя."""
     conn = get_conn_with_retry()
     c = conn.cursor()
     c.execute("UPDATE vpn_purchases SET is_active = FALSE WHERE user_id = %s AND is_active = TRUE", (user_id,))
@@ -762,6 +762,7 @@ def admin_kb():
     kb.add(telebot.types.InlineKeyboardButton(f"📅 Дней подписки: {days}", callback_data="admin_days"))
     kb.add(telebot.types.InlineKeyboardButton(f"🔐 Цена VPN: {vpn_price}₽/мес", callback_data="admin_vpn_price"))
     kb.add(telebot.types.InlineKeyboardButton(f"📝 Описание VPN", callback_data="admin_vpn_desc"))
+    kb.add(telebot.types.InlineKeyboardButton(f"📖 Инструкция VPN", callback_data="admin_vpn_instruction"))
     kb.add(telebot.types.InlineKeyboardButton(f"🔑 Управление ключами VPN", callback_data="admin_vpn_keys"))
     kb.add(telebot.types.InlineKeyboardButton(f"📢 Реклама: {'✅ Вкл' if ad_active else '❌ Выкл'}", callback_data="admin_ad_toggle"))
     kb.add(telebot.types.InlineKeyboardButton("✏️ Текст рекламы", callback_data="admin_ad_text"))
@@ -958,7 +959,7 @@ def cb(call):
         if payment_url:
             try:
                 bot.edit_message_text(
-                    f"💳 Для оплаты VPN перейдите по ссылке:\n{payment_url}\n\nПосле оплаты вы получите ключ.",
+                    f"💳 Для оплаты VPN перейдите по ссылке:\n{payment_url}\n\nПосле оплаты вы получите ключ и инструкцию.",
                     cid, call.message.message_id,
                     reply_markup=telebot.types.InlineKeyboardMarkup().add(
                         telebot.types.InlineKeyboardButton(t(cid, "btn_back"), callback_data="back_main")
@@ -998,6 +999,17 @@ def cb(call):
         current = get_vpn_description()
         try:
             bot.edit_message_text(f"📝 Текущее описание VPN:\n{current}\n\nВведите новое описание:", cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    elif data == "admin_vpn_instruction" and cid == ADMIN_ID:
+        user_states[cid] = "admin_edit_vpn_instruction"
+        current = get_vpn_instruction()
+        try:
+            bot.edit_message_text(
+                f"📖 Текущая инструкция VPN:\n\n{current}\n\nВведите новый текст (можно использовать {key} для подстановки ключа):",
+                cid, call.message.message_id,
+                reply_markup=back_main_kb(cid)
+            )
         except:
             pass
     elif data == "admin_vpn_keys" and cid == ADMIN_ID:
@@ -1208,6 +1220,13 @@ def text_handler(message):
         _show_admin(cid)
         return
 
+    if state == "admin_edit_vpn_instruction" and cid == ADMIN_ID:
+        set_setting("vpn_instruction", text)
+        bot.send_message(cid, "✅ Инструкция VPN обновлена!")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
     if state == "admin_add_vpn_key" and cid == ADMIN_ID:
         key_text = text.strip()
         if add_vpn_key(key_text):
@@ -1350,18 +1369,15 @@ def platiga_webhook():
                 date_str = sub_end.strftime("%d.%m.%Y %H:%M")
                 bot.send_message(user_id, t(user_id, "payment_success", date=date_str), reply_markup=main_kb(user_id))
             elif service_type == "vpn":
-                # Получить свободный ключ
                 key_id, key_text = get_free_vpn_key()
                 if key_id:
-                    # Деактивировать старые VPN у пользователя
                     deactivate_old_vpn(user_id)
-                    # Активировать новый
                     activate_vpn(user_id, key_id)
-                    instruction = t(user_id, "vpn_instruction", key=key_text)
+                    instruction_template = get_vpn_instruction()
+                    instruction = instruction_template.replace("{key}", key_text) if "{key}" in instruction_template else instruction_template + f"\n\n🔑 Ваш ключ: `{key_text}`"
                     bot.send_message(user_id, t(user_id, "vpn_paid_success", instruction=instruction), parse_mode="Markdown")
                 else:
                     bot.send_message(user_id, t(user_id, "vpn_no_keys"))
-                    # Уведомить админа, что ключи кончились
                     bot.send_message(ADMIN_ID, f"⚠️ У пользователя {user_id} прошла оплата VPN, но нет свободных ключей!")
         except Exception as e:
             logger.error(f"Ошибка обработки платежа: {e}")
