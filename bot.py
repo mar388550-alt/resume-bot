@@ -711,4 +711,712 @@ def main_kb(uid):
 def info_kb(uid):
     kb = telebot.types.InlineKeyboardMarkup()
     kb.row(
-        telebot.types.InlineKeyboardButton(t(uid, "btn_policy"), url=PRIVACY
+        telebot.types.InlineKeyboardButton(t(uid, "btn_policy"), url=PRIVACY_URL),
+        telebot.types.InlineKeyboardButton(t(uid, "btn_terms"), url=TERMS_URL)
+    )
+    kb.add(telebot.types.InlineKeyboardButton("📢 Наш канал", url="https://t.me/rezumeizi"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
+    return kb
+
+def support_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_write_support"), callback_data="write_support"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
+    return kb
+
+def back_main_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back_menu"), callback_data="back_main"))
+    return kb
+
+def back_resume_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back_resume"), callback_data="start_flow"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_home"), callback_data="back_main"))
+    return kb
+
+def result_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_again"), callback_data="start_flow"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_home"), callback_data="back_main"))
+    return kb
+
+def vpn_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup(row_width=1)
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_pay_vpn"), callback_data="vpn_subscribe"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_vpn_instruction"), callback_data="vpn_show_instruction"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
+    return kb
+
+def admin_kb():
+    price = get_setting("price")
+    days = get_setting("subscription_days")
+    ad_active = get_setting("ad_active") == "1"
+    price_text = f"{price}₽" if price != "0" else "Бесплатно"
+    vpn_price = get_vpn_price()
+    kb = telebot.types.InlineKeyboardMarkup(row_width=1)
+    kb.add(telebot.types.InlineKeyboardButton(f"💰 Цена резюме: {price_text}", callback_data="admin_price"))
+    kb.add(telebot.types.InlineKeyboardButton(f"📅 Дней подписки: {days}", callback_data="admin_days"))
+    kb.add(telebot.types.InlineKeyboardButton(f"🔐 Цена VPN: {vpn_price}₽/мес", callback_data="admin_vpn_price"))
+    kb.add(telebot.types.InlineKeyboardButton(f"📝 Описание VPN", callback_data="admin_vpn_desc"))
+    kb.add(telebot.types.InlineKeyboardButton(f"📖 Инструкция VPN", callback_data="admin_vpn_instruction"))
+    kb.add(telebot.types.InlineKeyboardButton(f"🔑 Управление ключами VPN", callback_data="admin_vpn_keys"))
+    kb.add(telebot.types.InlineKeyboardButton(f"📢 Реклама: {'✅ Вкл' if ad_active else '❌ Выкл'}", callback_data="admin_ad_toggle"))
+    kb.add(telebot.types.InlineKeyboardButton("✏️ Текст рекламы", callback_data="admin_ad_text"))
+    kb.add(telebot.types.InlineKeyboardButton("➕ Выдать подписку (резюме)", callback_data="admin_give_sub"))
+    kb.add(telebot.types.InlineKeyboardButton("📢 Рассылка всем", callback_data="admin_broadcast"))
+    kb.add(telebot.types.InlineKeyboardButton("📮 Опубликовать пост", callback_data="admin_post_now"))
+    kb.add(telebot.types.InlineKeyboardButton("🎫 Обращения", callback_data="admin_tickets"))
+    kb.add(telebot.types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"))
+    kb.add(telebot.types.InlineKeyboardButton("🔗 ЛК Platiga", url=PLATIGA_LK_URL))
+    kb.add(telebot.types.InlineKeyboardButton("🏠 Выйти из админки", callback_data="admin_exit"))
+    return kb
+
+def payment_methods_kb(uid):
+    kb = telebot.types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        telebot.types.InlineKeyboardButton("💳 Карты РФ", callback_data="pay_method_11"),
+        telebot.types.InlineKeyboardButton("📱 СБП", callback_data="pay_method_2"),
+        telebot.types.InlineKeyboardButton("🌍 Международные карты", callback_data="pay_method_12"),
+        telebot.types.InlineKeyboardButton("🇧🇾 ЕРИП", callback_data="pay_method_3"),
+        telebot.types.InlineKeyboardButton("₿ Криптовалюта", callback_data="pay_method_13")
+    )
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
+    return kb
+
+# ========== ОБРАБОТЧИКИ КОМАНД ==========
+@bot.message_handler(commands=["start"])
+def start(message):
+    cid = message.chat.id
+    user_states[cid] = None
+    upsert_user(cid)
+    delete_prev_menu(cid)
+    msg = bot.send_message(cid, T["ru"]["choose_lang"], reply_markup=lang_kb())
+    user_menu_msg[cid] = msg.message_id
+
+@bot.message_handler(commands=["admin"])
+def admin_cmd(message):
+    if message.chat.id != ADMIN_ID:
+        bot.send_message(message.chat.id, "⛔ Нет доступа.")
+        return
+    _show_admin(message.chat.id)
+
+def _show_admin(cid):
+    delete_prev_menu(cid)
+    price = get_setting("price")
+    days = get_setting("subscription_days")
+    ad_text = get_setting("ad_text") or "не задан"
+    ad_active = get_setting("ad_active") == "1"
+    topic_index = load_topic_index()
+    next_topic = TOPICS_RU[topic_index % len(TOPICS_RU)]
+    vpn_price = get_vpn_price()
+    vpn_free, vpn_used, vpn_active_subs = get_vpn_stats()
+    msg = bot.send_message(cid,
+        f"⚙️ Админ панель\n\n"
+        f"💰 Цена резюме: {price}₽\n"
+        f"📅 Дней подписки: {days}\n"
+        f"🔐 VPN цена: {vpn_price}₽/мес\n"
+        f"🔑 VPN ключи: {vpn_free} свободно / {vpn_used} использовано\n"
+        f"📡 Активных VPN: {vpn_active_subs}\n"
+        f"📢 Реклама: {'✅ Вкл' if ad_active else '❌ Выкл'}\n"
+        f"📝 Текст рекламы: {ad_text}\n\n"
+        f"🎫 Обращений: {count_tickets()}\n"
+        f"👥 Пользователей: {count_users()}\n\n"
+        f"📌 Следующий пост ({topic_index + 1}/{len(TOPICS_RU)}):\n{next_topic}",
+        reply_markup=admin_kb()
+    )
+    user_menu_msg[cid] = msg.message_id
+
+@bot.callback_query_handler(func=lambda call: True)
+def cb(call):
+    cid = call.message.chat.id
+    data = call.data
+
+    if data in ("lang_ru", "lang_en"):
+        lang = data.split("_")[1]
+        upsert_user(cid, lang=lang)
+        bot.answer_callback_query(call.id, T[lang]["lang_changed"])
+        user = get_user(cid)
+        if user and user["agreed"]:
+            try:
+                bot.edit_message_text(t(cid, "main_menu") + get_ad_footer(), cid, call.message.message_id, reply_markup=main_kb(cid))
+            except:
+                send_menu(cid, t(cid, "main_menu"), main_kb(cid))
+        else:
+            try:
+                bot.edit_message_text(t(cid, "welcome") + get_ad_footer(), cid, call.message.message_id, reply_markup=agree_kb(cid))
+            except:
+                send_menu(cid, t(cid, "welcome"), agree_kb(cid))
+    elif data == "agree":
+        upsert_user(cid, agreed=True)
+        try:
+            bot.edit_message_text(t(cid, "main_menu") + get_ad_footer(), cid, call.message.message_id, reply_markup=main_kb(cid))
+            user_menu_msg[cid] = call.message.message_id
+        except:
+            send_menu(cid, t(cid, "main_menu"), main_kb(cid))
+    elif data == "back_main":
+        user_states[cid] = None
+        try:
+            bot.edit_message_text(t(cid, "main_menu") + get_ad_footer(), cid, call.message.message_id, reply_markup=main_kb(cid))
+            user_menu_msg[cid] = call.message.message_id
+        except:
+            send_menu(cid, t(cid, "main_menu"), main_kb(cid))
+    elif data == "my_sub":
+        status = sub_status_text(cid)
+        kb = telebot.types.InlineKeyboardMarkup()
+        if not has_access(cid) and get_setting("price") != "0":
+            kb.add(telebot.types.InlineKeyboardButton(t(cid, "btn_pay_resume"), callback_data="pay_subscription"))
+        kb.add(telebot.types.InlineKeyboardButton(t(cid, "btn_back"), callback_data="back_main"))
+        try:
+            bot.edit_message_text(status + get_ad_footer(), cid, call.message.message_id, reply_markup=kb)
+        except:
+            pass
+    elif data == "pay_subscription":
+        user = get_user(cid)
+        if not user or not user["agreed"]:
+            bot.answer_callback_query(call.id, t(cid, "need_agree"))
+            return
+        if has_access(cid):
+            bot.answer_callback_query(call.id, "У вас уже есть активная подписка!")
+            return
+        if not MERCHANT_ID or not API_SECRET:
+            bot.answer_callback_query(call.id, "Платёжная система временно недоступна.")
+            return
+        try:
+            bot.edit_message_text("Выберите способ оплаты:", cid, call.message.message_id, reply_markup=payment_methods_kb(cid))
+            user_states[cid] = "choosing_payment_method"
+            user_data[cid] = {"service_type": "subscription", "amount": int(get_setting("price")), "description": f"Подписка на {get_setting('subscription_days')} дней"}
+        except:
+            pass
+    elif data.startswith("pay_method_"):
+        method = int(data.split("_")[2])
+        if user_states.get(cid) == "choosing_payment_method" and user_data.get(cid, {}).get("service_type"):
+            service_type = user_data[cid]["service_type"]
+            amount = user_data[cid]["amount"]
+            description = user_data[cid]["description"]
+        else:
+            service_type = "subscription"
+            amount = int(get_setting("price"))
+            description = f"Подписка на {get_setting('subscription_days')} дней"
+        payment_url = create_platiga_payment(cid, float(amount), description, payment_method=method, service_type=service_type)
+        if payment_url:
+            try:
+                bot.edit_message_text(
+                    f"💳 Для оплаты перейдите по ссылке:\n{payment_url}\n\nПосле оплаты услуга активируется автоматически.",
+                    cid, call.message.message_id,
+                    reply_markup=telebot.types.InlineKeyboardMarkup().add(
+                        telebot.types.InlineKeyboardButton(t(cid, "btn_back"), callback_data="back_main")
+                    )
+                )
+                user_states[cid] = None
+                user_data[cid] = {}
+            except:
+                pass
+        else:
+            bot.answer_callback_query(call.id, "❌ Ошибка создания платежа, попробуйте позже.")
+    elif data == "info":
+        try:
+            bot.edit_message_text(t(cid, "info_text") + get_ad_footer(), cid, call.message.message_id, reply_markup=info_kb(cid))
+        except:
+            pass
+    elif data == "support":
+        try:
+            bot.edit_message_text(t(cid, "support_text", email=SUPPORT_EMAIL) + get_ad_footer(), cid, call.message.message_id, reply_markup=support_kb(cid))
+        except:
+            pass
+    elif data == "write_support":
+        user_states[cid] = "writing_support"
+        try:
+            bot.edit_message_text(t(cid, "write_support") + get_ad_footer(), cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    # --- VPN ---
+    elif data == "vpn_menu":
+        user = get_user(cid)
+        if not user or not user["agreed"]:
+            bot.answer_callback_query(call.id, t(cid, "need_agree"))
+            return
+        description = get_vpn_description()
+        price = get_vpn_price()
+        active = has_active_vpn(cid)
+        if active:
+            purchase = get_active_vpn_purchase(cid)
+            expires = purchase["expires_at"].strftime("%d.%m.%Y")
+            key = purchase["key_text"]
+            status_text = t(cid, "vpn_active", date=expires, key=key)
+        else:
+            status_text = t(cid, "vpn_inactive")
+        text = t(cid, "vpn_menu", description=description, price=price, status=status_text)
+        try:
+            bot.edit_message_text(text, cid, call.message.message_id, reply_markup=vpn_kb(cid), parse_mode="Markdown")
+        except:
+            send_menu(cid, text, vpn_kb(cid))
+    elif data == "vpn_subscribe":
+        user = get_user(cid)
+        if not user or not user["agreed"]:
+            bot.answer_callback_query(call.id, t(cid, "need_agree"))
+            return
+        if not MERCHANT_ID or not API_SECRET:
+            bot.answer_callback_query(call.id, "Платёжная система временно недоступна.")
+            return
+        price = get_vpn_price()
+        description = "VPN без ограничений на 30 дней"
+        try:
+            bot.edit_message_text("Выберите способ оплаты:", cid, call.message.message_id, reply_markup=payment_methods_kb(cid))
+            user_states[cid] = "choosing_payment_method"
+            user_data[cid] = {"service_type": "vpn", "amount": price, "description": description}
+        except:
+            pass
+    elif data == "vpn_show_instruction":
+        instruction = get_vpn_instruction()
+        if "{key}" in instruction:
+            instruction = instruction.replace("{key}", "после оплаты")
+        kb = telebot.types.InlineKeyboardMarkup()
+        kb.add(telebot.types.InlineKeyboardButton(t(cid, "btn_back"), callback_data="vpn_menu"))
+        try:
+            bot.edit_message_text(f"📖 *Инструкция по подключению VPN*\n\n{instruction}", cid, call.message.message_id, reply_markup=kb, parse_mode="Markdown")
+        except:
+            pass
+    # --- АДМИНКА ---
+    elif data == "admin_exit" and cid == ADMIN_ID:
+        user_states[cid] = None
+        try:
+            bot.edit_message_text(t(cid, "main_menu") + get_ad_footer(), cid, call.message.message_id, reply_markup=main_kb(cid))
+        except:
+            send_menu(cid, t(cid, "main_menu"), main_kb(cid))
+    elif data == "admin_price" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_price"
+        try:
+            bot.edit_message_text(f"💰 Текущая цена (резюме): {get_setting('price')}₽\n\nВведите новую цену (0 = бесплатно):", cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    elif data == "admin_days" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_days"
+        try:
+            bot.edit_message_text(f"📅 Текущее кол-во дней: {get_setting('subscription_days')}\n\nВведите новое количество:", cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    elif data == "admin_vpn_price" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_vpn_price"
+        try:
+            bot.edit_message_text(f"🔐 Текущая цена VPN: {get_vpn_price()}₽\n\nВведите новую цену (только число):", cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    elif data == "admin_vpn_desc" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_vpn_desc"
+        current = get_vpn_description()
+        try:
+            bot.edit_message_text(f"📝 Текущее описание VPN:\n{current}\n\nВведите новое описание:", cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    elif data == "admin_vpn_instruction" and cid == ADMIN_ID:
+        user_states[cid] = "admin_edit_vpn_instruction"
+        current = get_vpn_instruction()
+        try:
+            bot.edit_message_text(
+                f"📖 Текущая инструкция VPN:\n\n{current}\n\nВведите новый текст (можно использовать {{key}} для подстановки ключа):",
+                cid, call.message.message_id,
+                reply_markup=back_main_kb(cid)
+            )
+        except:
+            pass
+    elif data == "admin_vpn_keys" and cid == ADMIN_ID:
+        kb = telebot.types.InlineKeyboardMarkup()
+        kb.add(telebot.types.InlineKeyboardButton("➕ Добавить ключ", callback_data="admin_add_vpn_key"))
+        kb.add(telebot.types.InlineKeyboardButton("📋 Список ключей", callback_data="admin_list_vpn_keys"))
+        kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_admin"))
+        try:
+            bot.edit_message_text("Управление ключами VPN:", cid, call.message.message_id, reply_markup=kb)
+        except:
+            pass
+    elif data == "admin_add_vpn_key" and cid == ADMIN_ID:
+        user_states[cid] = "admin_add_vpn_key"
+        try:
+            bot.edit_message_text("Введите новый ключ VPN (одной строкой):", cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    elif data == "admin_list_vpn_keys" and cid == ADMIN_ID:
+        keys = get_all_vpn_keys()
+        if not keys:
+            text = "Список ключей пуст."
+        else:
+            text = "🔑 *Ключи VPN:*\n\n"
+            for kid, ktext, used, used_by in keys:
+                status = "✅ свободен" if not used else f"❌ использован (user {used_by})"
+                text += f"`{ktext}`\n{status}\n\n"
+        kb = telebot.types.InlineKeyboardMarkup()
+        kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="admin_vpn_keys"))
+        try:
+            bot.edit_message_text(text, cid, call.message.message_id, reply_markup=kb, parse_mode="Markdown")
+        except:
+            pass
+    elif data == "admin_ad_toggle" and cid == ADMIN_ID:
+        current = get_setting("ad_active") == "1"
+        set_setting("ad_active", "0" if current else "1")
+        bot.answer_callback_query(call.id, f"Реклама {'выключена' if current else 'включена'}")
+        try:
+            bot.edit_message_reply_markup(cid, call.message.message_id, reply_markup=admin_kb())
+        except:
+            pass
+    elif data == "admin_ad_text" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_ad"
+        current = get_setting("ad_text") or "не задан"
+        try:
+            bot.edit_message_text(f"✏️ Текущий текст рекламы:\n{current}\n\nВведите новый текст:", cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    elif data == "admin_give_sub" and cid == ADMIN_ID:
+        user_states[cid] = "admin_give_sub"
+        try:
+            bot.edit_message_text(f"➕ Введите Telegram ID пользователя\n(подписка на {get_setting('subscription_days')} дней):", cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    elif data == "admin_broadcast" and cid == ADMIN_ID:
+        user_states[cid] = "admin_broadcast"
+        try:
+            bot.edit_message_text("📢 Введите текст рассылки:", cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    elif data == "admin_post_now" and cid == ADMIN_ID:
+        bot.answer_callback_query(call.id, "⏳ Публикую пост...")
+        threading.Thread(target=_admin_post_now, args=(cid,)).start()
+    elif data == "admin_tickets" and cid == ADMIN_ID:
+        tickets = get_tickets()
+        if not tickets:
+            bot.answer_callback_query(call.id, "🎫 Обращений нет")
+        else:
+            for uid, msg in tickets:
+                kb = telebot.types.InlineKeyboardMarkup()
+                kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
+                bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
+    elif data == "admin_stats" and cid == ADMIN_ID:
+        total_users, active_subs, today_subs, total_subs = get_stats()
+        users = get_users_list(offset=0, limit=20)
+        vpn_free, vpn_used, vpn_active_subs = get_vpn_stats()
+        stats_text = (
+            f"📊 Статистика\n\n"
+            f"👥 Всего пользователей: {total_users}\n"
+            f"✅ Активных подписок (резюме): {active_subs}\n"
+            f"📅 Подписок за сегодня: {today_subs}\n"
+            f"📈 Всего подписок (за всё время): {total_subs}\n"
+            f"🔐 Активных VPN: {vpn_active_subs}\n"
+            f"🔑 VPN ключей: свободно {vpn_free}, использовано {vpn_used}\n\n"
+            f"Список пользователей (первые 20):\n"
+        )
+        if users:
+            for uid, sub_end in users:
+                if sub_end:
+                    stats_text += f"{uid} — до {sub_end.strftime('%d.%m.%Y')}\n"
+                else:
+                    stats_text += f"{uid} — без подписки\n"
+        else:
+            stats_text += "Нет пользователей.\n"
+        kb = telebot.types.InlineKeyboardMarkup()
+        kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_admin"))
+        try:
+            bot.edit_message_text(stats_text, cid, call.message.message_id, reply_markup=kb)
+        except Exception as e:
+            logger.error(f"Ошибка редактирования: {e}")
+            bot.send_message(cid, stats_text, reply_markup=kb)
+    elif data == "back_admin" and cid == ADMIN_ID:
+        _show_admin(cid)
+    elif data.startswith("reply_") and cid == ADMIN_ID:
+        target_id = int(data.split("_")[1])
+        user_states[cid] = f"replying_{target_id}"
+        bot.send_message(cid, f"✉️ Введите ответ пользователю {target_id}:")
+    try:
+        bot.answer_callback_query(call.id)
+    except:
+        pass
+
+def _admin_post_now(admin_cid):
+    try:
+        topic_index = load_topic_index()
+        topic = TOPICS_RU[topic_index % len(TOPICS_RU)]
+        if post_with_retry(topic, retries=2):
+            save_topic_index(topic_index + 1)
+            bot.send_message(admin_cid, f"✅ Пост опубликован!\nТема: {topic}")
+        else:
+            bot.send_message(admin_cid, "❌ Не удалось опубликовать пост.")
+    except Exception as e:
+        logger.error(f"Ошибка _admin_post_now: {e}")
+        bot.send_message(admin_cid, f"❌ Ошибка: {e}")
+
+# ========== ОБРАБОТЧИК ДОКУМЕНТОВ ==========
+@bot.message_handler(content_types=["document"])
+def doc_handler(message):
+    cid = message.chat.id
+    if user_states.get(cid) != "waiting_resume":
+        return
+    doc = message.document
+    if not doc.file_name.endswith(".txt"):
+        bot.send_message(cid, t(cid, "only_txt"))
+        return
+    file_info = bot.get_file(doc.file_id)
+    downloaded = bot.download_file(file_info.file_path)
+    user_data.setdefault(cid, {})["resume"] = downloaded.decode("utf-8")
+    user_states[cid] = "waiting_vacancy"
+    send_menu(cid, t(cid, "step2"), back_resume_kb(cid))
+
+# ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
+@bot.message_handler(content_types=["text"])
+def text_handler(message):
+    cid = message.chat.id
+    text = message.text
+    state = user_states.get(cid)
+
+    if text.startswith("/"):
+        return
+
+    if state == "writing_support":
+        save_ticket(cid, text)
+        user_states[cid] = None
+        try:
+            bot.delete_message(cid, message.message_id)
+        except:
+            pass
+        send_menu(cid, t(cid, "support_sent", email=SUPPORT_EMAIL) + "\n\n" + t(cid, "main_menu"), main_kb(cid))
+        try:
+            bot.send_message(ADMIN_ID, f"🎫 Новое обращение от {cid}:\n\n{text}")
+        except:
+            pass
+        return
+
+    if state and state.startswith("replying_") and cid == ADMIN_ID:
+        target_id = int(state.split("_")[1])
+        try:
+            bot.send_message(target_id, f"📨 Ответ от поддержки:\n\n{text}")
+            delete_ticket(target_id)
+            bot.send_message(cid, f"✅ Ответ отправлен пользователю {target_id}")
+        except Exception as e:
+            bot.send_message(cid, f"❌ Ошибка: {e}")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_set_price" and cid == ADMIN_ID:
+        try:
+            set_setting("price", int(text))
+            user_states[cid] = None
+            _show_admin(cid)
+        except:
+            bot.send_message(cid, "❌ Введите число.")
+        return
+
+    if state == "admin_set_days" and cid == ADMIN_ID:
+        try:
+            set_setting("subscription_days", int(text))
+            user_states[cid] = None
+            _show_admin(cid)
+        except:
+            bot.send_message(cid, "❌ Введите число.")
+        return
+
+    if state == "admin_set_vpn_price" and cid == ADMIN_ID:
+        try:
+            new_price = int(text)
+            set_setting("vpn_price", new_price)
+            user_states[cid] = None
+            _show_admin(cid)
+        except:
+            bot.send_message(cid, "❌ Введите число (рубли).")
+        return
+
+    if state == "admin_set_vpn_desc" and cid == ADMIN_ID:
+        set_setting("vpn_description", text)
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_edit_vpn_instruction" and cid == ADMIN_ID:
+        set_setting("vpn_instruction", text)
+        bot.send_message(cid, "✅ Инструкция VPN обновлена!")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_add_vpn_key" and cid == ADMIN_ID:
+        key_text = text.strip()
+        if add_vpn_key(key_text):
+            bot.send_message(cid, f"✅ Ключ `{key_text}` добавлен в пул.", parse_mode="Markdown")
+        else:
+            bot.send_message(cid, "❌ Не удалось добавить ключ (возможно, уже существует).")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_set_ad" and cid == ADMIN_ID:
+        set_setting("ad_text", text)
+        set_setting("ad_active", "1")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_give_sub" and cid == ADMIN_ID:
+        try:
+            target_id = int(text.strip())
+            user = get_user(target_id)
+            if not user:
+                upsert_user(target_id)
+            days = int(get_setting("subscription_days") or 30)
+            sub_end = activate_subscription(target_id, days)
+            date_str = sub_end.strftime("%d.%m.%Y")
+            try:
+                bot.send_message(target_id, f"🎉 Подписка выдана до {date_str}!", reply_markup=main_kb(target_id))
+            except Exception as e:
+                logger.error(f"Не удалось отправить сообщение {target_id}: {e}")
+            bot.send_message(cid, f"✅ Подписка выдана пользователю {target_id} до {date_str}")
+        except ValueError:
+            bot.send_message(cid, "❌ Неверный ID. Введите число.")
+        except Exception as e:
+            bot.send_message(cid, f"❌ Ошибка: {e}")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    if state == "admin_broadcast" and cid == ADMIN_ID:
+        users = get_all_users()
+        sent = 0
+        for uid in users:
+            try:
+                bot.send_message(uid, f"📢 {text}")
+                sent += 1
+            except Exception as e:
+                logger.error(f"Не удалось отправить {uid}: {e}")
+        bot.send_message(cid, f"✅ Отправлено {sent}/{len(users)}")
+        user_states[cid] = None
+        _show_admin(cid)
+        return
+
+    user = get_user(cid)
+    if not user or not user["agreed"]:
+        send_menu(cid, t(cid, "need_agree"), agree_kb(cid))
+        return
+
+    if state == "waiting_resume":
+        if len(text) < 50:
+            bot.send_message(cid, t(cid, "too_short_resume"))
+            return
+        user_data.setdefault(cid, {})["resume"] = text
+        user_states[cid] = "waiting_vacancy"
+        send_menu(cid, t(cid, "step2"), back_resume_kb(cid))
+    elif state == "waiting_vacancy":
+        if re.match(r'https?://\S+', text.strip()):
+            bot.send_message(cid, t(cid, "no_links"))
+            return
+        if len(text) < 30:
+            bot.send_message(cid, t(cid, "too_short_vacancy"))
+            return
+        resume = user_data.get(cid, {}).get("resume", "")
+        user_states[cid] = None
+        delete_prev_menu(cid)
+        proc_msg = bot.send_message(cid, t(cid, "processing"))
+        lang = get_lang(cid)
+        try:
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT[lang]},
+                    {"role": "user", "content": f"RESUME:\n{resume}\n\n===\n\nVACANCY:\n{text}"}
+                ],
+                max_tokens=2000,
+                temperature=0.1
+            )
+            result = response.choices[0].message.content
+            try:
+                bot.delete_message(cid, proc_msg.message_id)
+            except:
+                pass
+            full_text = t(cid, "result_title") + result
+            if len(full_text) > 4000:
+                bot.send_message(cid, t(cid, "result_title"))
+                for i in range(0, len(result), 4000):
+                    bot.send_message(cid, result[i:i+4000])
+            else:
+                bot.send_message(cid, full_text)
+            send_menu(cid, t(cid, "result_next"), result_kb(cid))
+        except Exception as e:
+            logger.error(f"Groq error: {e}")
+            try:
+                bot.delete_message(cid, proc_msg.message_id)
+            except:
+                pass
+            send_menu(cid, t(cid, "error"), main_kb(cid))
+    else:
+        send_menu(cid, t(cid, "main_menu"), main_kb(cid))
+
+# ========== ВЕБХУКИ ==========
+@app.route("/" + BOT_TOKEN, methods=["POST"])
+def webhook():
+    try:
+        json_str = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+    return "OK", 200
+
+@app.route("/webhook/platiga", methods=["POST"])
+def platiga_webhook():
+    data = request.get_json(silent=True) or {}
+    logger.info(f"Platiga webhook: {data}")
+    status = data.get("status")
+    payload_str = data.get("payload") or "{}"
+    try:
+        payload = json.loads(payload_str) if isinstance(payload_str, str) else payload_str
+    except Exception as e:
+        logger.error(f"Ошибка парсинга payload: {e}")
+        payload = {}
+    user_id = payload.get("user_id")
+    service_type = payload.get("type", "subscription")
+    if status == "CONFIRMED" and user_id:
+        try:
+            user_id = int(user_id)
+            if service_type == "subscription":
+                sub_end = activate_subscription(user_id)
+                date_str = sub_end.strftime("%d.%m.%Y %H:%M")
+                bot.send_message(user_id, t(user_id, "payment_success", date=date_str), reply_markup=main_kb(user_id))
+            elif service_type == "vpn":
+                key_id, key_text = get_free_vpn_key()
+                if key_id:
+                    deactivate_old_vpn(user_id)
+                    activate_vpn(user_id, key_id)
+                    instruction_template = get_vpn_instruction()
+                    instruction = instruction_template.replace("{key}", key_text) if "{key}" in instruction_template else instruction_template + f"\n\n🔑 Ваш ключ: `{key_text}`"
+                    bot.send_message(user_id, t(user_id, "vpn_paid_success", instruction=instruction), parse_mode="Markdown", reply_markup=main_kb(user_id))
+                else:
+                    bot.send_message(user_id, t(user_id, "vpn_no_keys"), reply_markup=main_kb(user_id))
+                    bot.send_message(ADMIN_ID, f"⚠️ У пользователя {user_id} прошла оплата VPN, но нет свободных ключей!")
+        except Exception as e:
+            logger.error(f"Ошибка обработки платежа: {e}")
+    return "OK", 200
+
+@app.route("/cron/post", methods=["GET"])
+def cron_post():
+    threading.Thread(target=scheduled_job).start()
+    return "OK", 200
+
+@app.route("/")
+def index():
+    return "Bot is running!", 200
+
+# ========== ГЛОБАЛЬНАЯ ИНИЦИАЛИЗАЦИЯ ДЛЯ GUNICORN ==========
+def startup():
+    logger.info("🔧 Запуск инициализации базы данных и вебхука...")
+    try:
+        init_database()
+        logger.info("✅ База данных инициализирована")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации БД: {e}")
+    try:
+        bot.remove_webhook()
+        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
+        bot.set_webhook(url=webhook_url)
+        logger.info(f"✅ Вебхук установлен: {webhook_url}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка установки вебхука: {e}")
+
+startup()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
