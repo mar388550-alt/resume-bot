@@ -294,9 +294,22 @@ def init_database():
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='is_subscribed') THEN
                 ALTER TABLE users ADD COLUMN is_subscribed BOOLEAN DEFAULT FALSE;
             END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='payments' AND column_name='service_type') THEN
+                ALTER TABLE payments ADD COLUMN service_type TEXT;
+            END IF;
         END $$;
     """)
     logger.info("Колонки подписки проверены/добавлены")
+
+    try:
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_order_id ON payments(order_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_visits_created_at ON visits(created_at)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_visits_user_id ON visits(user_id)")
+        conn.commit()
+        logger.info("Индексы для payments/visits проверены/созданы")
+    except Exception as e:
+        logger.error(f"Ошибка создания индексов payments/visits: {e}")
+        conn.rollback()
 
     init_data = [
         ("INSERT INTO poster_state (key, value) VALUES ('topic_index', 0) ON CONFLICT (key) DO NOTHING", None),
@@ -576,6 +589,73 @@ def get_stats():
         conn.close()
     return total_users, active_subs, today_subs, total_subs
 
+def log_visit(uid):
+    """Пишет одну строку в visits при каждом /start — это и есть счётчик 'посещений',
+    в отличие от users, куда пользователь попадает только один раз (первый визит)."""
+    try:
+        conn = get_conn_with_retry()
+        c = conn.cursor()
+        c.execute("INSERT INTO visits(user_id) VALUES(%s)", (uid,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Ошибка log_visit: {e}")
+
+def get_visit_stats():
+    try:
+        conn = get_conn_with_retry()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM visits")
+        total = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM visits WHERE created_at >= DATE_TRUNC('day', NOW())")
+        today = c.fetchone()[0]
+        c.execute("SELECT COUNT(DISTINCT user_id) FROM visits")
+        unique_total = c.fetchone()[0]
+        conn.close()
+        return total, today, unique_total
+    except Exception as e:
+        logger.error(f"Ошибка get_visit_stats: {e}")
+        return 0, 0, 0
+
+def record_payment(user_id, order_id, amount, status, service_type):
+    """Пишет успешную оплату в payments. ON CONFLICT по order_id — чтобы повторный
+    вебхук от Platiga (ретрай) не задвоил заказ в статистике."""
+    try:
+        conn = get_conn_with_retry()
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO payments(user_id, order_id, amount, status, service_type) VALUES(%s,%s,%s,%s,%s) ON CONFLICT (order_id) DO NOTHING",
+            (user_id, order_id, amount, status, service_type)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Ошибка record_payment: {e}")
+
+def get_order_stats():
+    try:
+        conn = get_conn_with_retry()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments WHERE status='CONFIRMED'")
+        total_orders, total_revenue = c.fetchone()
+        c.execute("""
+            SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments
+            WHERE status='CONFIRMED' AND created_at >= DATE_TRUNC('day', NOW())
+        """)
+        today_orders, today_revenue = c.fetchone()
+        c.execute("""
+            SELECT service_type, COUNT(*), COALESCE(SUM(amount),0)
+            FROM payments
+            WHERE status='CONFIRMED'
+            GROUP BY service_type
+        """)
+        by_service = c.fetchall()
+        conn.close()
+        return total_orders, total_revenue, today_orders, today_revenue, by_service
+    except Exception as e:
+        logger.error(f"Ошибка get_order_stats: {e}")
+        return 0, 0, 0, 0, []
+
 def get_users_list(offset=0, limit=20):
     try:
         conn = get_conn_with_retry()
@@ -678,7 +758,7 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
     if not order_id:
         order_id = f"{user_id}_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}"
     bot_url = f"https://t.me/{(bot.get_me()).username}"
-    payload_dict = {"user_id": user_id, "order_id": order_id, "type": service_type}
+    payload_dict = {"user_id": user_id, "order_id": order_id, "type": service_type, "amount": amount}
     if extra_payload:
         payload_dict.update(extra_payload)
     payload_data = json.dumps(payload_dict, ensure_ascii=False)
@@ -902,6 +982,7 @@ def payment_methods_kb(uid):
 @bot.message_handler(commands=["start"])
 def start(message):
     cid = message.chat.id
+    log_visit(cid)
     parts = message.text.split(maxsplit=1)
     param = parts[1].strip() if len(parts) > 1 else ""
 
@@ -1267,14 +1348,33 @@ def cb(call):
             total_users, active_subs, today_subs, total_subs = get_stats()
             users = get_users_list(offset=0, limit=20)
             vpn_free, vpn_used, vpn_active_subs = get_vpn_stats()
+            visits_total, visits_today, visits_unique = get_visit_stats()
+            orders_total, revenue_total, orders_today, revenue_today, orders_by_service = get_order_stats()
+
             stats_text = (
                 f"📊 Статистика\n\n"
-                f"👥 Всего пользователей: {total_users}\n"
-                f"✅ Активных подписок (резюме): {active_subs}\n"
-                f"📅 Подписок за сегодня: {today_subs}\n"
-                f"📈 Всего подписок (за всё время): {total_subs}\n"
-                f"🔐 Активных VPN: {vpn_active_subs}\n"
-                f"🔑 VPN ключей: свободно {vpn_free}, использовано {vpn_used}\n\n"
+                f"👀 Посещения\n"
+                f"Всего визитов: {visits_total}\n"
+                f"Уникальных пользователей: {visits_unique}\n"
+                f"Сегодня: {visits_today}\n\n"
+                f"🛒 Заказы (все сервисы)\n"
+                f"Всего: {orders_total} на {revenue_total}₽\n"
+                f"Сегодня: {orders_today} на {revenue_today}₽\n"
+            )
+            if orders_by_service:
+                for service_type, count, revenue in orders_by_service:
+                    label = SERVICE_LABELS.get(service_type, service_type or "не указано")
+                    stats_text += f"  • {label}: {count} на {revenue}₽\n"
+
+            stats_text += (
+                f"\n👥 Пользователи бота\n"
+                f"Всего: {total_users}\n"
+                f"Активных подписок (резюме): {active_subs}\n"
+                f"Подписок за сегодня: {today_subs}\n"
+                f"Всего подписок (за всё время): {total_subs}\n\n"
+                f"🔐 VPN\n"
+                f"Активных: {vpn_active_subs}\n"
+                f"Ключей: свободно {vpn_free}, использовано {vpn_used}\n\n"
                 f"Список пользователей (первые 20):\n"
             )
             if users:
@@ -1567,6 +1667,9 @@ def platiga_webhook():
     if status == "CONFIRMED" and user_id:
         try:
             user_id = int(user_id)
+            order_id = payload.get("order_id")
+            amount = payload.get("amount")
+            record_payment(user_id, order_id, amount, status, service_type)
             if service_type == "subscription":
                 sub_end = activate_subscription(user_id)
                 date_str = sub_end.strftime("%d.%m.%Y %H:%M")
