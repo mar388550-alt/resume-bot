@@ -991,11 +991,23 @@ def clear_legacy_keyboard(cid):
     except Exception as e:
         logger.error(f"Ошибка clear_legacy_keyboard: {e}")
 
+def clear_legacy_menu_button(cid):
+    """setChatMenuButton можно вызвать глобально (по умолчанию для всех) ИЛИ отдельно
+    для конкретного chat_id — персональное переопределение. Сброс через BotFather
+    (/setmenubutton) трогает только глобальную настройку. Если компрометированный
+    токен выставил кнопку персонально для этого chat_id, глобальный сброс её не уберёт —
+    поэтому сбрасываем её и здесь, отдельно для каждого пользователя."""
+    try:
+        bot.set_chat_menu_button(chat_id=cid, menu_button=telebot.types.MenuButtonDefault())
+    except Exception as e:
+        logger.error(f"Ошибка clear_legacy_menu_button: {e}")
+
 @bot.message_handler(commands=["start"])
 def start(message):
     cid = message.chat.id
     log_visit(cid)
     clear_legacy_keyboard(cid)
+    clear_legacy_menu_button(cid)
     parts = message.text.split(maxsplit=1)
     param = parts[1].strip() if len(parts) > 1 else ""
 
