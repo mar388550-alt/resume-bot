@@ -979,10 +979,23 @@ def payment_methods_kb(uid):
     kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
     return kb
 
+def clear_legacy_keyboard(cid):
+    """Снимает persistent reply-клавиатуру, которую мог прислать компрометированный
+    токен (например, фейковая кнопка казино). Пользователь не может убрать такую
+    клавиатуру сам через интерфейс Telegram — это может сделать только бот, отправив
+    ReplyKeyboardRemove. Отправляем невидимый символ и сразу удаляем сообщение, чтобы
+    не засорять чат."""
+    try:
+        m = bot.send_message(cid, "\u2063", reply_markup=telebot.types.ReplyKeyboardRemove())
+        bot.delete_message(cid, m.message_id)
+    except Exception as e:
+        logger.error(f"Ошибка clear_legacy_keyboard: {e}")
+
 @bot.message_handler(commands=["start"])
 def start(message):
     cid = message.chat.id
     log_visit(cid)
+    clear_legacy_keyboard(cid)
     parts = message.text.split(maxsplit=1)
     param = parts[1].strip() if len(parts) > 1 else ""
 
