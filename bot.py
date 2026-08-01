@@ -722,7 +722,7 @@ def generate_post(topic):
 - Используй эмодзи
 - Без хэштегов"""
     response = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=500,
         temperature=0.7
@@ -1610,7 +1610,7 @@ def text_handler(message):
         lang = get_lang(cid)
         try:
             response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT[lang]},
                     {"role": "user", "content": f"RESUME:\n{resume}\n\n===\n\nVACANCY:\n{text}"}
