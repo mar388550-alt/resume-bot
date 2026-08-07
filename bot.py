@@ -29,6 +29,13 @@ API_SECRET = os.getenv("API_SECRET")
 PLATIGA_API_URL = "https://app.platega.io/transaction/process"
 PLATIGA_LK_URL = "https://platega.io/"
 
+# Blizko: интеграция с vector-chat-api (доп.аккаунты)
+BLIZKO_API_URL = os.getenv("BLIZKO_API_URL", "https://vector-chat-api.onrender.com")
+BLIZKO_API_KEY = os.getenv("BLIZKO_API_KEY", "")
+
+# Схема Postgres для resume-bot (изолирована от таблиц Blizko в том же Supabase-проекте)
+DB_SCHEMA = os.getenv("DB_SCHEMA", "resume_bot")
+
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -38,9 +45,27 @@ PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-15-17"
 TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-15-10"
 SUPPORT_EMAIL = "marfor13365@gmail.com"
 
+SERVICE_LABELS = {
+    "subscription": "Резюме-адаптер",
+    "vpn": "VPN",
+    "blizko_extra_account": "Доп.аккаунт Znakomstor",
+}
+
 user_states = {}
 user_data = {}
 user_menu_msg = {}
+
+# Достаём id заявки из вставленной пользователем ссылки (или сырого id)
+REQUEST_ID_RE = re.compile(r"e_([a-zA-Z0-9\-]+)")
+
+def extract_request_id(pasted_text):
+    m = REQUEST_ID_RE.search(pasted_text.strip())
+    if m:
+        return m.group(1)
+    cleaned = pasted_text.strip()
+    if re.fullmatch(r"[a-zA-Z0-9\-]{8,}", cleaned):
+        return cleaned
+    return None
 
 # ========== ПЕРЕВОДЫ ==========
 T = {
@@ -83,9 +108,8 @@ T = {
         "error": "❌ Ошибка. Попробуй ещё раз.",
         "lang_changed": "✅ Язык: Русский",
         "payment_success": "✅ Оплата прошла успешно!\nПодписка резюме-адаптер активна до {date}.",
-        # VPN
         "btn_vpn": "🔐 VPN без ограничений",
-        "vpn_menu": "🌐 *VPN без ограничений*\n\n{description}\n\n💰 Цена: {price}₽ / месяц\n\n{status}",
+        "vpn_menu": "🌐 *VPN без ограничений*\n\n{description}\n\n💰 Цена: {price}₽\n\n{status}",
         "vpn_active": "✅ Ваш VPN активен до {date}\n🔑 Ключ:\n`{key}`",
         "vpn_inactive": "❌ У вас нет активного VPN.",
         "btn_pay_resume": "💳 Оплатить резюме адаптер",
@@ -93,6 +117,12 @@ T = {
         "btn_vpn_instruction": "📖 Инструкция",
         "vpn_paid_success": "✅ Оплата VPN получена!\n\n{instruction}",
         "vpn_no_keys": "⚠️ К сожалению, все ключи временно закончились. Обратитесь к администратору.",
+        "btn_blizko_extra": "💳 Оплатить доп. аккаунт в Znakomstor",
+        "btn_rules": "📜 Правила",
+        "blizko_ask_link": "Вставь сюда ссылку, которую тебе показал сайт Znakomstor:",
+        "blizko_link_invalid": "Не распознал ссылку. Проверь, что скопировал её полностью с сайта Znakomstor, и вставь ещё раз.",
+        "blizko_request_gone": "⚠️ Заявка не найдена или уже обработана. Получи новую ссылку на сайте Znakomstor.",
+        "blizko_terms": "📜 *Правила*\n\nАдаптация резюме под вакансию — сервис этого бота. Приложение Znakomstor (сайт: https://znakom.store) — отдельный сервис, оплата дополнительного аккаунта на устройстве проходит здесь. Оплата не подлежит возврату после выдачи кода доступа. Код одноразовый и действителен только для устройства, с которого была создана заявка.",
     },
     "en": {
         "choose_lang": "🌍 Выберите язык / Choose language:",
@@ -133,9 +163,8 @@ T = {
         "error": "❌ Error. Try again.",
         "lang_changed": "✅ Language: English",
         "payment_success": "✅ Payment successful!\nResume adapter subscription active until {date}.",
-        # VPN
         "btn_vpn": "🔐 Unlimited VPN",
-        "vpn_menu": "🌐 *Unlimited VPN*\n\n{description}\n\n💰 Price: {price}₽ / month\n\n{status}",
+        "vpn_menu": "🌐 *Unlimited VPN*\n\n{description}\n\n💰 Price: {price}₽\n\n{status}",
         "vpn_active": "✅ Your VPN is active until {date}\n🔑 Key:\n`{key}`",
         "vpn_inactive": "❌ You don't have an active VPN.",
         "btn_pay_resume": "💳 Pay for resume adapter",
@@ -143,6 +172,12 @@ T = {
         "btn_vpn_instruction": "📖 Instructions",
         "vpn_paid_success": "✅ VPN payment received!\n\n{instruction}",
         "vpn_no_keys": "⚠️ Sorry, all keys are temporarily sold out. Contact administrator.",
+        "btn_blizko_extra": "💳 Pay for extra Znakomstor account",
+        "btn_rules": "📜 Rules",
+        "blizko_ask_link": "Paste the link the Znakomstor site showed you:",
+        "blizko_link_invalid": "Couldn't recognize that link. Make sure you copied it fully from Znakomstor, then paste it again.",
+        "blizko_request_gone": "⚠️ Request not found or already processed. Get a new link from the Znakomstor site.",
+        "blizko_terms": "📜 *Rules*\n\nResume adaptation is this bot's own service. The Znakomstor app (site: https://znakom.store) is a separate service; payment for an extra account on a device happens here. Payment is non-refundable after the access code is issued. The code is single-use and only valid for the device the request was created from.",
     }
 }
 
@@ -151,9 +186,12 @@ SYSTEM_PROMPT = {
     "en": "You are a resume expert. Briefly adapt the resume for the vacancy: add keywords, optimize for ATS. Keep real data. End with 2-3 lines: match % and key changes."
 }
 
-# ========== ФУНКЦИИ БАЗЫ ДАННЫХ ==========
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode="require", connect_timeout=10)
+    conn = psycopg2.connect(DATABASE_URL, sslmode="require", connect_timeout=10)
+    with conn.cursor() as c:
+        c.execute(f"SET search_path TO {DB_SCHEMA}, public")
+    conn.commit()
+    return conn
 
 def get_conn_with_retry(retries=5, delay=3):
     for attempt in range(1, retries + 1):
@@ -171,6 +209,14 @@ def get_conn_with_retry(retries=5, delay=3):
 def init_database():
     conn = get_conn_with_retry(retries=5, delay=3)
     c = conn.cursor()
+
+    try:
+        c.execute(f"CREATE SCHEMA IF NOT EXISTS {DB_SCHEMA}")
+        conn.commit()
+        logger.info(f"Схема {DB_SCHEMA} проверена/создана")
+    except Exception as e:
+        logger.error(f"Ошибка создания схемы {DB_SCHEMA}: {e}")
+        conn.rollback()
 
     tables = {
         "users": """
@@ -219,6 +265,13 @@ def init_database():
                 expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 is_active BOOLEAN DEFAULT TRUE
             )
+        """,
+        "visits": """
+            CREATE TABLE IF NOT EXISTS visits (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
         """
     }
     for name, sql in tables.items():
@@ -241,9 +294,22 @@ def init_database():
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='is_subscribed') THEN
                 ALTER TABLE users ADD COLUMN is_subscribed BOOLEAN DEFAULT FALSE;
             END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='payments' AND column_name='service_type') THEN
+                ALTER TABLE payments ADD COLUMN service_type TEXT;
+            END IF;
         END $$;
     """)
     logger.info("Колонки подписки проверены/добавлены")
+
+    try:
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_order_id ON payments(order_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_visits_created_at ON visits(created_at)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_visits_user_id ON visits(user_id)")
+        conn.commit()
+        logger.info("Индексы для payments/visits проверены/созданы")
+    except Exception as e:
+        logger.error(f"Ошибка создания индексов payments/visits: {e}")
+        conn.rollback()
 
     init_data = [
         ("INSERT INTO poster_state (key, value) VALUES ('topic_index', 0) ON CONFLICT (key) DO NOTHING", None),
@@ -254,6 +320,7 @@ def init_database():
         ("INSERT INTO settings(key,value) VALUES('vpn_price','300') ON CONFLICT(key) DO NOTHING", None),
         ("INSERT INTO settings(key,value) VALUES('vpn_description','🔐 Анонимный и быстрый VPN без ограничений трафика и скорости. Подходит для любых устройств.') ON CONFLICT(key) DO NOTHING", None),
         ("INSERT INTO settings(key,value) VALUES('vpn_instruction','📱 Инструкция по подключению VPN через Happ:\n\n1️⃣ Скачайте приложение:\n• Android (Google Play): https://play.google.com/store/apps/details?id=com.happproxy\n• Android (RuStore): https://apps.rustore.ru/app/com.happproxy\n• iOS: https://apps.apple.com/ru/app/happ-proxy-utility/id6504287215\n\n2️⃣ Скопируйте ключ: {key}\n\n3️⃣ Откройте Happ → кнопка «+» → «Из буфера» → нажмите на сервер.\n\n✅ Готово!') ON CONFLICT(key) DO NOTHING", None),
+        ("INSERT INTO settings(key,value) VALUES('blizko_extra_base_price','200') ON CONFLICT(key) DO NOTHING", None),
     ]
     for sql, params in init_data:
         try:
@@ -266,7 +333,6 @@ def init_database():
     conn.close()
     logger.info("✅ Инициализация базы данных успешно завершена")
 
-# ========== ОСНОВНЫЕ ФУНКЦИИ РАБОТЫ С БД ==========
 def get_user(uid):
     conn = get_conn_with_retry()
     c = conn.cursor(cursor_factory=RealDictCursor)
@@ -370,7 +436,6 @@ def get_all_users():
     conn.close()
     return rows
 
-# ========== ФУНКЦИИ ПОДПИСКИ (резюме) ==========
 def has_access(uid):
     try:
         if get_setting("price") == "0":
@@ -408,7 +473,6 @@ def activate_subscription(user_id: int, days: int = None):
     logger.info(f"✅ Подписка (резюме) активирована для {user_id} до {sub_end}")
     return sub_end
 
-# ========== ФУНКЦИИ VPN ==========
 def get_vpn_price():
     return int(get_setting("vpn_price") or 300)
 
@@ -491,18 +555,21 @@ def get_all_vpn_keys():
     return rows
 
 def get_vpn_stats():
-    conn = get_conn_with_retry()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM vpn_keys WHERE used = FALSE")
-    free = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM vpn_keys WHERE used = TRUE")
-    used = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM vpn_purchases WHERE is_active = TRUE AND expires_at > NOW()")
-    active_subs = c.fetchone()[0]
-    conn.close()
-    return free, used, active_subs
+    try:
+        conn = get_conn_with_retry()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM vpn_keys WHERE used = FALSE")
+        free = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM vpn_keys WHERE used = TRUE")
+        used = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM vpn_purchases WHERE is_active = TRUE AND expires_at > NOW()")
+        active_subs = c.fetchone()[0]
+        conn.close()
+        return free, used, active_subs
+    except Exception as e:
+        logger.error(f"Ошибка get_vpn_stats: {e}")
+        return 0, 0, 0
 
-# ========== ФУНКЦИИ СТАТИСТИКИ ==========
 def get_stats():
     conn = get_conn_with_retry()
     c = conn.cursor()
@@ -522,20 +589,90 @@ def get_stats():
         conn.close()
     return total_users, active_subs, today_subs, total_subs
 
-def get_users_list(offset=0, limit=20):
-    conn = get_conn_with_retry()
-    c = conn.cursor()
-    c.execute("""
-        SELECT user_id, sub_end
-        FROM users
-        ORDER BY user_id
-        LIMIT %s OFFSET %s
-    """, (limit, offset))
-    rows = c.fetchall()
-    conn.close()
-    return rows
+def log_visit(uid):
+    """Пишет одну строку в visits при каждом /start — это и есть счётчик 'посещений',
+    в отличие от users, куда пользователь попадает только один раз (первый визит)."""
+    try:
+        conn = get_conn_with_retry()
+        c = conn.cursor()
+        c.execute("INSERT INTO visits(user_id) VALUES(%s)", (uid,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Ошибка log_visit: {e}")
 
-# ========== ФУНКЦИИ ПОСТИНГА ==========
+def get_visit_stats():
+    try:
+        conn = get_conn_with_retry()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM visits")
+        total = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM visits WHERE created_at >= DATE_TRUNC('day', NOW())")
+        today = c.fetchone()[0]
+        c.execute("SELECT COUNT(DISTINCT user_id) FROM visits")
+        unique_total = c.fetchone()[0]
+        conn.close()
+        return total, today, unique_total
+    except Exception as e:
+        logger.error(f"Ошибка get_visit_stats: {e}")
+        return 0, 0, 0
+
+def record_payment(user_id, order_id, amount, status, service_type):
+    """Пишет успешную оплату в payments. ON CONFLICT по order_id — чтобы повторный
+    вебхук от Platiga (ретрай) не задвоил заказ в статистике."""
+    try:
+        conn = get_conn_with_retry()
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO payments(user_id, order_id, amount, status, service_type) VALUES(%s,%s,%s,%s,%s) ON CONFLICT (order_id) DO NOTHING",
+            (user_id, order_id, amount, status, service_type)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Ошибка record_payment: {e}")
+
+def get_order_stats():
+    try:
+        conn = get_conn_with_retry()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments WHERE status='CONFIRMED'")
+        total_orders, total_revenue = c.fetchone()
+        c.execute("""
+            SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments
+            WHERE status='CONFIRMED' AND created_at >= DATE_TRUNC('day', NOW())
+        """)
+        today_orders, today_revenue = c.fetchone()
+        c.execute("""
+            SELECT service_type, COUNT(*), COALESCE(SUM(amount),0)
+            FROM payments
+            WHERE status='CONFIRMED'
+            GROUP BY service_type
+        """)
+        by_service = c.fetchall()
+        conn.close()
+        return total_orders, total_revenue, today_orders, today_revenue, by_service
+    except Exception as e:
+        logger.error(f"Ошибка get_order_stats: {e}")
+        return 0, 0, 0, 0, []
+
+def get_users_list(offset=0, limit=20):
+    try:
+        conn = get_conn_with_retry()
+        c = conn.cursor()
+        c.execute("""
+            SELECT user_id, sub_end
+            FROM users
+            ORDER BY user_id
+            LIMIT %s OFFSET %s
+        """, (limit, offset))
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.error(f"Ошибка get_users_list: {e}")
+        return []
+
 def load_topic_index():
     try:
         conn = get_conn_with_retry()
@@ -585,7 +722,7 @@ def generate_post(topic):
 - Используй эмодзи
 - Без хэштегов"""
     response = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=500,
         temperature=0.7
@@ -617,12 +754,14 @@ def scheduled_job():
     if success:
         save_topic_index(topic_index + 1)
 
-# ========== ПЛАТЕЖИ ==========
-def create_platiga_payment(user_id, amount, description, payment_method=11, order_id=None, service_type="subscription"):
+def create_platiga_payment(user_id, amount, description, payment_method=11, order_id=None, service_type="subscription", extra_payload=None):
     if not order_id:
         order_id = f"{user_id}_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}"
     bot_url = f"https://t.me/{(bot.get_me()).username}"
-    payload_data = json.dumps({"user_id": user_id, "order_id": order_id, "type": service_type}, ensure_ascii=False)
+    payload_dict = {"user_id": user_id, "order_id": order_id, "type": service_type, "amount": amount}
+    if extra_payload:
+        payload_dict.update(extra_payload)
+    payload_data = json.dumps(payload_dict, ensure_ascii=False)
     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook/platiga"
     payload = {
         "paymentMethod": payment_method,
@@ -647,7 +786,61 @@ def create_platiga_payment(user_id, amount, description, payment_method=11, orde
         logger.error(f"Ошибка создания платежа: {e}")
         return None
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+def blizko_mark_paid(request_id):
+    try:
+        r = requests.post(
+            f"{BLIZKO_API_URL}/api/unlock/mark-paid",
+            headers={"X-Api-Key": BLIZKO_API_KEY, "Content-Type": "application/json"},
+            json={"request_id": request_id},
+            timeout=15
+        )
+        if r.status_code == 200:
+            return r.json().get("code")
+        logger.error(f"blizko mark-paid error: {r.status_code} {r.text}")
+        return None
+    except Exception as e:
+        logger.error(f"blizko_mark_paid exception: {e}")
+        return None
+
+def get_blizko_extra_base_price():
+    return int(get_setting("blizko_extra_base_price") or 200)
+
+def blizko_get_request_info(request_id):
+    """Спрашивает у Render точную цену заявки (там уже посчитана прогрессия)."""
+    try:
+        r = requests.get(f"{BLIZKO_API_URL}/api/unlock/status/{request_id}", timeout=10)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        logger.error(f"blizko_get_request_info exception: {e}")
+    return None
+
+def blizko_offer_kb():
+    kb = telebot.types.InlineKeyboardMarkup(row_width=1)
+    kb.add(telebot.types.InlineKeyboardButton("💳 Оплатить", callback_data="blizko_pay"))
+    return kb
+
+def show_blizko_offer(cid, request_id):
+    info = blizko_get_request_info(request_id)
+    if not info:
+        bot.send_message(cid, t(cid, "blizko_request_gone"))
+        return
+
+    price = info["price"]
+    user_data.setdefault(cid, {})["blizko_request_id"] = request_id
+    user_data[cid]["blizko_price"] = price
+
+    text = (
+        "➕ *Дополнительный аккаунт Znakomstor*\n\n"
+        f"Стоимость: {price}₽\n\n"
+        "После оплаты пришлю код — скопируй его и вставь на сайте Znakomstor, чтобы создать второй аккаунт на этом устройстве."
+    )
+
+    delete_prev_menu(cid)
+    text = text + "\n\n" + t(cid, "blizko_terms")
+    msg = bot.send_message(cid, text, reply_markup=blizko_offer_kb(), parse_mode="Markdown")
+    user_menu_msg[cid] = msg.message_id
+
 def t(uid, key, **kwargs):
     user = get_user(uid)
     lang = user["lang"] if user else "ru"
@@ -680,7 +873,6 @@ def send_menu(cid, text, kb):
     user_menu_msg[cid] = msg.message_id
     return msg
 
-# ========== КЛАВИАТУРЫ ==========
 def lang_kb():
     kb = telebot.types.InlineKeyboardMarkup()
     kb.row(
@@ -704,7 +896,9 @@ def main_kb(uid):
         kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_optimize"), callback_data="start_flow"))
     kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_vpn"), callback_data="vpn_menu"))
     kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_my_sub"), callback_data="my_sub"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_blizko_extra"), callback_data="blizko_extra_start"))
     kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_info"), callback_data="info"))
+    kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_rules"), callback_data="rules"))
     kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_support"), callback_data="support"))
     return kb
 
@@ -758,6 +952,7 @@ def admin_kb():
     kb.add(telebot.types.InlineKeyboardButton(f"💰 Цена резюме: {price_text}", callback_data="admin_price"))
     kb.add(telebot.types.InlineKeyboardButton(f"📅 Дней подписки: {days}", callback_data="admin_days"))
     kb.add(telebot.types.InlineKeyboardButton(f"🔐 Цена VPN: {vpn_price}₽/мес", callback_data="admin_vpn_price"))
+    kb.add(telebot.types.InlineKeyboardButton(f"➕ Базовая цена доп.аккаунта Znakomstor: {get_blizko_extra_base_price()}₽", callback_data="admin_blizko_extra_price"))
     kb.add(telebot.types.InlineKeyboardButton(f"📝 Описание VPN", callback_data="admin_vpn_desc"))
     kb.add(telebot.types.InlineKeyboardButton(f"📖 Инструкция VPN", callback_data="admin_vpn_instruction"))
     kb.add(telebot.types.InlineKeyboardButton(f"🔑 Управление ключами VPN", callback_data="admin_vpn_keys"))
@@ -784,10 +979,46 @@ def payment_methods_kb(uid):
     kb.add(telebot.types.InlineKeyboardButton(t(uid, "btn_back"), callback_data="back_main"))
     return kb
 
-# ========== ОБРАБОТЧИКИ КОМАНД ==========
+def clear_legacy_keyboard(cid):
+    """Снимает persistent reply-клавиатуру, которую мог прислать компрометированный
+    токен (например, фейковая кнопка казино). Пользователь не может убрать такую
+    клавиатуру сам через интерфейс Telegram — это может сделать только бот, отправив
+    ReplyKeyboardRemove. Отправляем невидимый символ и сразу удаляем сообщение, чтобы
+    не засорять чат."""
+    try:
+        m = bot.send_message(cid, "\u2063", reply_markup=telebot.types.ReplyKeyboardRemove())
+        bot.delete_message(cid, m.message_id)
+    except Exception as e:
+        logger.error(f"Ошибка clear_legacy_keyboard: {e}")
+
+def clear_legacy_menu_button(cid):
+    """setChatMenuButton можно вызвать глобально (по умолчанию для всех) ИЛИ отдельно
+    для конкретного chat_id — персональное переопределение. Сброс через BotFather
+    (/setmenubutton) трогает только глобальную настройку. Если компрометированный
+    токен выставил кнопку персонально для этого chat_id, глобальный сброс её не уберёт —
+    поэтому сбрасываем её и здесь, отдельно для каждого пользователя."""
+    try:
+        bot.set_chat_menu_button(chat_id=cid, menu_button=telebot.types.MenuButtonDefault())
+    except Exception as e:
+        logger.error(f"Ошибка clear_legacy_menu_button: {e}")
+
 @bot.message_handler(commands=["start"])
 def start(message):
     cid = message.chat.id
+    log_visit(cid)
+    clear_legacy_keyboard(cid)
+    clear_legacy_menu_button(cid)
+    parts = message.text.split(maxsplit=1)
+    param = parts[1].strip() if len(parts) > 1 else ""
+
+    if param.startswith("e_"):
+        request_id = param[2:]
+        user_states[cid] = None
+        upsert_user(cid)
+        delete_prev_menu(cid)
+        show_blizko_offer(cid, request_id)
+        return
+
     user_states[cid] = None
     upsert_user(cid)
     delete_prev_menu(cid)
@@ -818,6 +1049,7 @@ def _show_admin(cid):
         f"🔐 VPN цена: {vpn_price}₽/мес\n"
         f"🔑 VPN ключи: {vpn_free} свободно / {vpn_used} использовано\n"
         f"📡 Активных VPN: {vpn_active_subs}\n"
+        f"➕ Базовая цена доп.аккаунта Znakomstor: {get_blizko_extra_base_price()}₽\n"
         f"📢 Реклама: {'✅ Вкл' if ad_active else '❌ Выкл'}\n"
         f"📝 Текст рекламы: {ad_text}\n\n"
         f"🎫 Обращений: {count_tickets()}\n"
@@ -888,17 +1120,55 @@ def cb(call):
             user_data[cid] = {"service_type": "subscription", "amount": int(get_setting("price")), "description": f"Подписка на {get_setting('subscription_days')} дней"}
         except:
             pass
+    elif data == "rules":
+        kb = telebot.types.InlineKeyboardMarkup()
+        kb.add(telebot.types.InlineKeyboardButton(t(cid, "btn_back"), callback_data="back_main"))
+        try:
+            bot.edit_message_text(t(cid, "blizko_terms"), cid, call.message.message_id, reply_markup=kb, parse_mode="Markdown")
+        except:
+            send_menu(cid, t(cid, "blizko_terms"), kb)
+    elif data == "blizko_extra_start":
+        user_states[cid] = "awaiting_blizko_link"
+        try:
+            bot.edit_message_text(t(cid, "blizko_ask_link"), cid, call.message.message_id, reply_markup=back_main_kb(cid))
+            user_menu_msg[cid] = call.message.message_id
+        except:
+            send_menu(cid, t(cid, "blizko_ask_link"), back_main_kb(cid))
+    elif data == "blizko_pay":
+        if not MERCHANT_ID or not API_SECRET:
+            bot.answer_callback_query(call.id, "Платёжная система временно недоступна.")
+            return
+        request_id = user_data.get(cid, {}).get("blizko_request_id")
+        price = user_data.get(cid, {}).get("blizko_price")
+        if not request_id or not price:
+            bot.answer_callback_query(call.id, "Заявка не найдена, вставь ссылку заново.")
+            return
+        try:
+            bot.edit_message_text("Выберите способ оплаты:", cid, call.message.message_id, reply_markup=payment_methods_kb(cid))
+            user_states[cid] = "choosing_payment_method"
+            user_data[cid].update({
+                "service_type": "blizko_extra_account",
+                "amount": price,
+                "description": "Blizko: дополнительный аккаунт",
+                "blizko_request_id": request_id
+            })
+        except:
+            pass
     elif data.startswith("pay_method_"):
         method = int(data.split("_")[2])
         if user_states.get(cid) == "choosing_payment_method" and user_data.get(cid, {}).get("service_type"):
             service_type = user_data[cid]["service_type"]
             amount = user_data[cid]["amount"]
             description = user_data[cid]["description"]
+            blizko_request_id = user_data[cid].get("blizko_request_id")
         else:
             service_type = "subscription"
             amount = int(get_setting("price"))
             description = f"Подписка на {get_setting('subscription_days')} дней"
-        payment_url = create_platiga_payment(cid, float(amount), description, payment_method=method, service_type=service_type)
+            blizko_request_id = None
+
+        extra_payload = {"request_id": blizko_request_id} if blizko_request_id else None
+        payment_url = create_platiga_payment(cid, float(amount), description, payment_method=method, service_type=service_type, extra_payload=extra_payload)
         if payment_url:
             try:
                 bot.edit_message_text(
@@ -930,7 +1200,6 @@ def cb(call):
             bot.edit_message_text(t(cid, "write_support") + get_ad_footer(), cid, call.message.message_id, reply_markup=back_main_kb(cid))
         except:
             pass
-    # --- VPN ---
     elif data == "vpn_menu":
         user = get_user(cid)
         if not user or not user["agreed"]:
@@ -977,7 +1246,6 @@ def cb(call):
             bot.edit_message_text(f"📖 *Инструкция по подключению VPN*\n\n{instruction}", cid, call.message.message_id, reply_markup=kb, parse_mode="Markdown")
         except:
             pass
-    # --- АДМИНКА ---
     elif data == "admin_exit" and cid == ADMIN_ID:
         user_states[cid] = None
         try:
@@ -994,6 +1262,17 @@ def cb(call):
         user_states[cid] = "admin_set_days"
         try:
             bot.edit_message_text(f"📅 Текущее кол-во дней: {get_setting('subscription_days')}\n\nВведите новое количество:", cid, call.message.message_id, reply_markup=back_main_kb(cid))
+        except:
+            pass
+    elif data == "admin_blizko_extra_price" and cid == ADMIN_ID:
+        user_states[cid] = "admin_set_blizko_extra_price"
+        try:
+            bot.edit_message_text(
+                f"➕ Текущая базовая цена доп.аккаунта: {get_blizko_extra_base_price()}₽\n\n"
+                f"Это цена за ПЕРВЫЙ доп.аккаунт. Каждый следующий на том же устройстве — вдвое дороже "
+                f"(2-й = ×2, 3-й = ×4 и т.д. автоматически).\n\nВведите новую базовую цену (число):",
+                cid, call.message.message_id, reply_markup=back_main_kb(cid)
+            )
         except:
             pass
     elif data == "admin_vpn_price" and cid == ADMIN_ID:
@@ -1090,34 +1369,60 @@ def cb(call):
                 kb.add(telebot.types.InlineKeyboardButton("✉️ Ответить", callback_data=f"reply_{uid}"))
                 bot.send_message(cid, f"🎫 От {uid}:\n\n{msg}", reply_markup=kb)
     elif data == "admin_stats" and cid == ADMIN_ID:
-        total_users, active_subs, today_subs, total_subs = get_stats()
-        users = get_users_list(offset=0, limit=20)
-        vpn_free, vpn_used, vpn_active_subs = get_vpn_stats()
-        stats_text = (
-            f"📊 Статистика\n\n"
-            f"👥 Всего пользователей: {total_users}\n"
-            f"✅ Активных подписок (резюме): {active_subs}\n"
-            f"📅 Подписок за сегодня: {today_subs}\n"
-            f"📈 Всего подписок (за всё время): {total_subs}\n"
-            f"🔐 Активных VPN: {vpn_active_subs}\n"
-            f"🔑 VPN ключей: свободно {vpn_free}, использовано {vpn_used}\n\n"
-            f"Список пользователей (первые 20):\n"
-        )
-        if users:
-            for uid, sub_end in users:
-                if sub_end:
-                    stats_text += f"{uid} — до {sub_end.strftime('%d.%m.%Y')}\n"
-                else:
-                    stats_text += f"{uid} — без подписки\n"
-        else:
-            stats_text += "Нет пользователей.\n"
-        kb = telebot.types.InlineKeyboardMarkup()
-        kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_admin"))
         try:
-            bot.edit_message_text(stats_text, cid, call.message.message_id, reply_markup=kb)
+            total_users, active_subs, today_subs, total_subs = get_stats()
+            users = get_users_list(offset=0, limit=20)
+            vpn_free, vpn_used, vpn_active_subs = get_vpn_stats()
+            visits_total, visits_today, visits_unique = get_visit_stats()
+            orders_total, revenue_total, orders_today, revenue_today, orders_by_service = get_order_stats()
+
+            stats_text = (
+                f"📊 Статистика\n\n"
+                f"👀 Посещения\n"
+                f"Всего визитов: {visits_total}\n"
+                f"Уникальных пользователей: {visits_unique}\n"
+                f"Сегодня: {visits_today}\n\n"
+                f"🛒 Заказы (все сервисы)\n"
+                f"Всего: {orders_total} на {revenue_total}₽\n"
+                f"Сегодня: {orders_today} на {revenue_today}₽\n"
+            )
+            if orders_by_service:
+                for service_type, count, revenue in orders_by_service:
+                    label = SERVICE_LABELS.get(service_type, service_type or "не указано")
+                    stats_text += f"  • {label}: {count} на {revenue}₽\n"
+
+            stats_text += (
+                f"\n👥 Пользователи бота\n"
+                f"Всего: {total_users}\n"
+                f"Активных подписок (резюме): {active_subs}\n"
+                f"Подписок за сегодня: {today_subs}\n"
+                f"Всего подписок (за всё время): {total_subs}\n\n"
+                f"🔐 VPN\n"
+                f"Активных: {vpn_active_subs}\n"
+                f"Ключей: свободно {vpn_free}, использовано {vpn_used}\n\n"
+                f"Список пользователей (первые 20):\n"
+            )
+            if users:
+                for uid, sub_end in users:
+                    if sub_end:
+                        stats_text += f"{uid} — до {sub_end.strftime('%d.%m.%Y')}\n"
+                    else:
+                        stats_text += f"{uid} — без подписки\n"
+            else:
+                stats_text += "Нет пользователей.\n"
+            kb = telebot.types.InlineKeyboardMarkup()
+            kb.add(telebot.types.InlineKeyboardButton("◀️ Назад", callback_data="back_admin"))
+            try:
+                bot.edit_message_text(stats_text, cid, call.message.message_id, reply_markup=kb)
+            except Exception as e:
+                logger.error(f"Ошибка редактирования: {e}")
+                bot.send_message(cid, stats_text, reply_markup=kb)
         except Exception as e:
-            logger.error(f"Ошибка редактирования: {e}")
-            bot.send_message(cid, stats_text, reply_markup=kb)
+            logger.error(f"Ошибка admin_stats: {e}")
+            try:
+                bot.send_message(cid, f"❌ Не удалось получить статистику: {e}")
+            except:
+                pass
     elif data == "back_admin" and cid == ADMIN_ID:
         _show_admin(cid)
     elif data.startswith("reply_") and cid == ADMIN_ID:
@@ -1142,7 +1447,6 @@ def _admin_post_now(admin_cid):
         logger.error(f"Ошибка _admin_post_now: {e}")
         bot.send_message(admin_cid, f"❌ Ошибка: {e}")
 
-# ========== ОБРАБОТЧИК ДОКУМЕНТОВ ==========
 @bot.message_handler(content_types=["document"])
 def doc_handler(message):
     cid = message.chat.id
@@ -1158,7 +1462,6 @@ def doc_handler(message):
     user_states[cid] = "waiting_vacancy"
     send_menu(cid, t(cid, "step2"), back_resume_kb(cid))
 
-# ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
 @bot.message_handler(content_types=["text"])
 def text_handler(message):
     cid = message.chat.id
@@ -1166,6 +1469,15 @@ def text_handler(message):
     state = user_states.get(cid)
 
     if text.startswith("/"):
+        return
+
+    if state == "awaiting_blizko_link":
+        request_id = extract_request_id(text)
+        if not request_id:
+            bot.send_message(cid, t(cid, "blizko_link_invalid"))
+            return
+        user_states[cid] = None
+        show_blizko_offer(cid, request_id)
         return
 
     if state == "writing_support":
@@ -1206,6 +1518,15 @@ def text_handler(message):
     if state == "admin_set_days" and cid == ADMIN_ID:
         try:
             set_setting("subscription_days", int(text))
+            user_states[cid] = None
+            _show_admin(cid)
+        except:
+            bot.send_message(cid, "❌ Введите число.")
+        return
+
+    if state == "admin_set_blizko_extra_price" and cid == ADMIN_ID:
+        try:
+            set_setting("blizko_extra_base_price", int(text))
             user_states[cid] = None
             _show_admin(cid)
         except:
@@ -1314,7 +1635,7 @@ def text_handler(message):
         lang = get_lang(cid)
         try:
             response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT[lang]},
                     {"role": "user", "content": f"RESUME:\n{resume}\n\n===\n\nVACANCY:\n{text}"}
@@ -1345,7 +1666,6 @@ def text_handler(message):
     else:
         send_menu(cid, t(cid, "main_menu"), main_kb(cid))
 
-# ========== ВЕБХУКИ ==========
 @app.route("/" + BOT_TOKEN, methods=["POST"])
 def webhook():
     try:
@@ -1372,6 +1692,9 @@ def platiga_webhook():
     if status == "CONFIRMED" and user_id:
         try:
             user_id = int(user_id)
+            order_id = payload.get("order_id")
+            amount = payload.get("amount")
+            record_payment(user_id, order_id, amount, status, service_type)
             if service_type == "subscription":
                 sub_end = activate_subscription(user_id)
                 date_str = sub_end.strftime("%d.%m.%Y %H:%M")
@@ -1387,6 +1710,22 @@ def platiga_webhook():
                 else:
                     bot.send_message(user_id, t(user_id, "vpn_no_keys"), reply_markup=main_kb(user_id))
                     bot.send_message(ADMIN_ID, f"⚠️ У пользователя {user_id} прошла оплата VPN, но нет свободных ключей!")
+            elif service_type == "blizko_extra_account":
+                request_id = payload.get("request_id")
+                if request_id:
+                    code = blizko_mark_paid(request_id)
+                    if code:
+                        bot.send_message(
+                            user_id,
+                            f"✅ Оплата получена!\n\n➕ Дополнительный аккаунт\n\nТвой код доступа:\n`{code}`\n\nВставь его на сайте Znakomstor, чтобы продолжить.",
+                            parse_mode="Markdown",
+                            reply_markup=main_kb(user_id)
+                        )
+                    else:
+                        bot.send_message(user_id, "⚠️ Оплата получена, но возникла ошибка генерации кода. Напишите в поддержку.", reply_markup=main_kb(user_id))
+                        bot.send_message(ADMIN_ID, f"⚠️ Blizko: оплата прошла, но mark-paid не сработал. user={user_id} request_id={request_id}")
+                else:
+                    logger.error("blizko payload без request_id")
         except Exception as e:
             logger.error(f"Ошибка обработки платежа: {e}")
     return "OK", 200
@@ -1396,11 +1735,16 @@ def cron_post():
     threading.Thread(target=scheduled_job).start()
     return "OK", 200
 
+@app.route("/api/blizko-prices", methods=["GET"])
+def blizko_prices():
+    return {
+        "extra_base_price": get_blizko_extra_base_price()
+    }, 200
+
 @app.route("/")
 def index():
     return "Bot is running!", 200
 
-# ========== ГЛОБАЛЬНАЯ ИНИЦИАЛИЗАЦИЯ ДЛЯ GUNICORN ==========
 def startup():
     logger.info("🔧 Запуск инициализации базы данных и вебхука...")
     try:
